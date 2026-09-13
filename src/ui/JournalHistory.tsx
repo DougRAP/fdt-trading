@@ -1,4 +1,4 @@
-import { ledgerOf, useApp } from "../app/store";
+import { MODE_LABELS, ledgerOf, useApp } from "../app/store";
 import type { LedgerEvent } from "../campaign/types";
 import type { InstrumentRoot } from "../config/modelConfig";
 import { Drawer } from "./Drawer";
@@ -63,7 +63,7 @@ export function JournalHistory() {
   const superseded = new Set(st.supersededEventIds);
   const interpreterEvents = ledger.events.filter((e): e is Extract<LedgerEvent, { type: `INTERPRETER_${string}` }> => e.type.startsWith("INTERPRETER_"));
   return (
-    <Drawer open={state.drawer === "journal"} title={`Journal history · ${state.mode === "manual" ? "Manual journal" : "Paper only"} · All time · fixture session · USD`} onClose={() => actions.openDrawer(null)}>
+    <Drawer open={state.drawer === "journal"} title={`Journal history · ${MODE_LABELS[state.mode]} · All time · fixture session · USD`} onClose={() => actions.openDrawer(null)}>
       <h3>Campaigns</h3>
       {ledger.campaigns.length === 0 ? (
         <p className="cp-small">No campaigns recorded.</p>
