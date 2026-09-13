@@ -4,6 +4,8 @@ import { FormulaDetails } from "./ui/FormulaDetails";
 import { Header } from "./ui/Header";
 import { HowItWorks } from "./ui/HowItWorks";
 import { JournalHistory } from "./ui/JournalHistory";
+import { ModelMemory } from "./ui/ModelMemory";
+import { ModelReading } from "./ui/ModelReading";
 import { ModelSettings } from "./ui/ModelSettings";
 import { Observer } from "./ui/Observer";
 import { ResultsDetails } from "./ui/ResultsDetails";
@@ -29,6 +31,7 @@ function Console() {
       <div className="cp-layout">
         <Observer />
         <div className="cp-right">
+          <ModelReading />
           <TradeTicket />
           <CampaignResults />
         </div>
@@ -38,6 +41,7 @@ function Console() {
       <FormulaDetails />
       <JournalHistory />
       <ModelSettings />
+      <ModelMemory />
       <ResultsDetails />
     </div>
   );

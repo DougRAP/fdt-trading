@@ -1,4 +1,4 @@
-import { useApp } from "../app/store";
+import { MODE_LABELS, useApp } from "../app/store";
 import { fmtTime } from "./format";
 
 export function Header() {
@@ -13,12 +13,11 @@ export function Header() {
       </div>
       <div className="cp-top-controls">
         <div className="cp-mode" role="group" aria-label="Trading mode">
-          <button type="button" aria-pressed={state.mode === "manual"} onClick={() => actions.setMode("manual")}>
-            Manual journal
-          </button>
-          <button type="button" aria-pressed={state.mode === "paper"} onClick={() => actions.setMode("paper")}>
-            AI paper
-          </button>
+          {(["manual", "paper", "paperModel"] as const).map((m) => (
+            <button key={m} type="button" aria-pressed={state.mode === m} onClick={() => actions.setMode(m)}>
+              {MODE_LABELS[m]}
+            </button>
+          ))}
         </div>
         <div className="cp-meta">
           <label>
@@ -40,6 +39,7 @@ export function Header() {
           <button type="button" className="cp-drawer-btn" onClick={() => actions.openDrawer("formula")}>Formula</button>
           <button type="button" className="cp-drawer-btn" onClick={() => actions.openDrawer("journal")}>Journal</button>
           <button type="button" className="cp-drawer-btn" onClick={() => actions.openDrawer("settings")}>Settings</button>
+          <button type="button" className="cp-drawer-btn" onClick={() => actions.openDrawer("memory")}>Model memory</button>
           <a className="cp-drawer-btn cp-link" href="#how-it-works">How it works</a>
         </div>
       </div>

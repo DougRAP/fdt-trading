@@ -61,6 +61,7 @@ export function JournalHistory() {
   const st = ledger.state;
   const rootOf = (id: string) => st.campaigns[id]?.root ?? "NQ";
   const superseded = new Set(st.supersededEventIds);
+  const interpreterEvents = ledger.events.filter((e): e is Extract<LedgerEvent, { type: `INTERPRETER_${string}` }> => e.type.startsWith("INTERPRETER_"));
   return (
     <Drawer open={state.drawer === "journal"} title={`Journal history · ${state.mode === "manual" ? "Manual journal" : "Paper only"} · All time · fixture session · USD`} onClose={() => actions.openDrawer(null)}>
       <h3>Campaigns</h3>
@@ -90,6 +91,41 @@ export function JournalHistory() {
                   <td>{fmtMoney(c.netRealizedMils, true)}</td>
                   <td>{fmtMoney(c.feesMils)}</td>
                   <td>{fmtMoney(c.originalRiskMils)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <h3>Interpreter (requests, answers, clamps and memory)</h3>
+      {interpreterEvents.length === 0 ? (
+        <p className="cp-small">No interpreter events in this ledger.</p>
+      ) : (
+        <div className="cp-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Time</th>
+                <th scope="col">Type</th>
+                <th scope="col">Bar / scope</th>
+                <th scope="col">Detail</th>
+              </tr>
+            </thead>
+            <tbody>
+              {interpreterEvents.map((e) => (
+                <tr key={e.id}>
+                  <td style={{ textAlign: "left" }}>{fmtTime(e.timestamp)}</td>
+                  <td style={{ textAlign: "left" }}>{e.type.replace("INTERPRETER_", "")}</td>
+                  <td style={{ textAlign: "left" }}>
+                    {e.type === "INTERPRETER_LESSON"
+                      ? `${e.campaignId} · ${e.epochId}`
+                      : e.type === "INTERPRETER_DIGEST"
+                        ? e.epochId
+                        : e.type === "INTERPRETER_MEMORY_RESET"
+                          ? `${e.previousEpochId} → ${e.epochId}`
+                          : `${fmtTime(e.barEnd)} · ${e.callKind}`}
+                  </td>
+                  <td style={{ textAlign: "left" }}>{describe(e, rootOf)}</td>
                 </tr>
               ))}
             </tbody>

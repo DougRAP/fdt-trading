@@ -46,7 +46,7 @@ export function TradeTicket() {
   );
 }
 
-function PlannedGroup({ snapshot, side, equityMils, contractsOverride }: { snapshot: SignalSnapshot; side: Side | null; equityMils: Mils | null; contractsOverride?: number }) {
+function PlannedGroup({ snapshot, side, equityMils, contractsOverride, modelStopTicks }: { snapshot: SignalSnapshot; side: Side | null; equityMils: Mils | null; contractsOverride?: number; modelStopTicks?: Ticks | null }) {
   const { state } = useApp();
   const plan = draftPlan(snapshot, side, equityMils, state.cfg, contractsOverride);
   if (!plan.ok) {
@@ -61,13 +61,13 @@ function PlannedGroup({ snapshot, side, equityMils, contractsOverride }: { snaps
   const note = `${plan.marginNote} · risk includes ${plan.perContractRisk.costConvention} · a planned loss, not a guaranteed maximum`;
   return (
     <div className="cp-group">
-      <h3>Planned (model v{state.cfg.version} · synthetic inputs · USD)</h3>
+      <h3>{modelStopTicks ? `Planned from the model proposal (${state.cfg.interpreter.promptVersion} · cleared by the risk engine · USD)` : `Planned (model v${state.cfg.version} · synthetic inputs · USD)`}</h3>
       <div className="cp-fields">
         <div className="cp-field">Contract<span className="cp-v">{plan.instrument.contract}</span></div>
         <div className="cp-field">Side<span className="cp-v">{sideText(plan.side)}</span></div>
         <div className="cp-field">Contracts<span className="cp-v">{plan.sizing ? (plan.sizing.skip ? `0 · skip` : plan.sizing.contracts) : `${plan.contracts} (equity not entered)`}</span></div>
         <div className="cp-field">Planned entry<span className="cp-v">{fmtPrice(plan.plannedEntry, root)}</span></div>
-        <div className="cp-field">Proposed initial stop<span className="cp-v">{fmtPrice(plan.plannedStop, root)}</span></div>
+        <div className="cp-field">{modelStopTicks ? "Proposed stop (model)" : "Proposed initial stop"}<span className="cp-v" title={modelStopTicks ? `Model proposal cleared by the risk engine; the calculator stop for this market is ${fmtPrice(plan.plannedStop, root)}` : undefined}>{fmtPrice(modelStopTicks ?? plan.plannedStop, root)}</span></div>
         <div className="cp-field">Distance<span className="cp-v cp-ellipsis" title={`${fmtPoints(plan.distanceTicks, root)} · ${fmtPct(plan.pctOfEntry)} of entry`}>{fmtPrice(plan.distanceTicks, root)} pts · {fmtPct(plan.pctOfEntry)}</span></div>
         <div className="cp-field">Planned risk<span className="cp-v cp-ellipsis" title={`${fmtMoney(plan.riskMils)} = ${plan.contracts} contracts × ${fmtMoney(plan.perContractRisk.totalMils)} per contract`}>{fmtMoney(plan.riskMils)} ({plan.contracts}×)</span></div>
         <div className="cp-field">% of account equity<span className="cp-v">{plan.pctOfEquity === null ? `${EM_DASH} · equity not entered` : fmtPct(plan.pctOfEquity)}</span></div>
@@ -94,7 +94,7 @@ function OpenState({ summary, c }: { summary: PositionSummary; c: Campaign }) {
         <div className="cp-field">Total fees<span className="cp-value">{fmtMoney(summary.feesMils)}</span></div>
         <div className="cp-field">Current R multiple<span className="cp-value">{summary.rMultiple === null ? EM_DASH : `${fmtNum(summary.rMultiple)} R${summary.markStale ? " (stale)" : ""}`}</span></div>
         <div className="cp-field">Proposed trailing stop<span className="cp-value">{fmtPrice(summary.proposedStop ?? summary.restingStop, root)}{c.stopFrozenReason ? " · frozen" : ""}</span></div>
-        <div className="cp-field">{c.mode === "paper" ? "Simulated resting stop" : "Recorded broker stop"}<span className="cp-value">{c.mode === "paper" ? fmtPrice(summary.restingStop, root) : summary.brokerStop === null ? `${EM_DASH} · not recorded` : `${fmtPrice(summary.brokerStop, root)} · ${c.brokerStop?.status}`}</span></div>
+        <div className="cp-field">{c.mode === "manual" ? "Recorded broker stop" : "Simulated resting stop"}<span className="cp-value">{c.mode === "manual" ? (summary.brokerStop === null ? `${EM_DASH} · not recorded` : `${fmtPrice(summary.brokerStop, root)} · ${c.brokerStop?.status}`) : fmtPrice(summary.restingStop, root)}</span></div>
         {c.mode === "manual" && (
           <div className="cp-field">Discrepancy<span className="cp-value">{summary.discrepancy.diffTicks === null ? EM_DASH : summary.discrepancy.matches ? "none" : `${summary.discrepancy.diffTicks} ticks`}</span></div>
         )}
@@ -124,24 +124,33 @@ function ManualTicket({ snapshot, active }: { snapshot: SignalSnapshot | null; a
   if (!snapshot) return <p className="cp-small">Select a market.</p>;
   const side = candidateSide(snapshot);
   const anyQualified = state.snapshots.some((s) => s.status === "QUALIFIED");
+  // Decision 4: the ticket drafts from the model proposal when one exists for this market.
+  const clamped = state.modelReading?.clamped ?? null;
+  const modelEnter = clamped && clamped.action === "enter" && clamped.root === snapshot.root ? clamped : null;
   return (
     <>
       <p className="cp-small">
         {snapshot.status === "QUALIFIED" ? `${snapshot.root} qualifies (${snapshot.displaySide}). ` : anyQualified ? `${snapshot.root} does not qualify; inspecting a non-qualifying market. ` : "No qualifying trade. "}
         Recording is journaling only; a draft is not a fill.
       </p>
-      <PlannedGroup snapshot={snapshot} side={side} equityMils={equity} />
-      <ManualEntryForm key={`${snapshot.root}:${state.configLabel}:${equity ?? "none"}`} snapshot={snapshot} side={side} equityMils={equity} />
+      <PlannedGroup snapshot={snapshot} side={side} equityMils={equity} modelStopTicks={modelEnter?.stopTicks ?? null} />
+      <ManualEntryForm
+        key={`${snapshot.root}:${state.configLabel}:${equity ?? "none"}:${modelEnter?.stopTicks ?? "plan"}`}
+        snapshot={snapshot}
+        side={modelEnter ? modelEnter.side : side}
+        equityMils={equity}
+        modelStopTicks={modelEnter?.stopTicks ?? null}
+      />
     </>
   );
 }
 
-function ManualEntryForm({ snapshot, side, equityMils }: { snapshot: SignalSnapshot; side: Side | null; equityMils: Mils | null }) {
+function ManualEntryForm({ snapshot, side, equityMils, modelStopTicks }: { snapshot: SignalSnapshot; side: Side | null; equityMils: Mils | null; modelStopTicks?: Ticks | null }) {
   const { state, actions } = useApp();
   const inst = INSTRUMENTS[snapshot.root];
   const plan = draftPlan(snapshot, side, equityMils, state.cfg);
   const plannedPriceText = plan.ok ? fmtPrice(plan.plannedEntry, snapshot.root) : "";
-  const plannedStopText = plan.ok ? fmtPrice(plan.plannedStop, snapshot.root) : "";
+  const plannedStopText = plan.ok ? fmtPrice(modelStopTicks ?? plan.plannedStop, snapshot.root) : "";
   const tickText = fmtPrice(1, snapshot.root);
   // Prefilled with the planned values as real controlled values: recording a fill at plan is one click.
   const [qty, setQty] = useState(() => (plan.ok ? String(Math.max(1, plan.contracts)) : "1"));
@@ -252,6 +261,11 @@ function ManualEntryForm({ snapshot, side, equityMils }: { snapshot: SignalSnaps
   return (
     <div className="cp-group">
       <h3>Actual fill (recorded at your broker · USD)</h3>
+      {modelStopTicks !== null && modelStopTicks !== undefined && (
+        <p className="cp-small cp-ellipsis" title="The model proposed this market; the risk engine cleared the stop. You still record what your broker actually did.">
+          Drafted from the model proposal for {snapshot.root}: stop {fmtPrice(modelStopTicks, snapshot.root)}. Recording is still your own fill.
+        </p>
+      )}
       <div className="cp-fields">
         <div className="cp-field">Contract<span className="cp-v">{inst.contract}</span></div>
         <label>
@@ -458,13 +472,38 @@ function ManualOpenActions({ c, snapshot }: { c: Campaign; snapshot: SignalSnaps
 
 function PaperTicket({ snapshot, active }: { snapshot: SignalSnapshot | null; active: Campaign | null }) {
   const { state, actions } = useApp();
-  const ledger = state.ledgers.paper;
+  const modelMode = state.mode === "paperModel";
+  const ledger = modelMode ? state.ledgers.paperModel : state.ledgers.paper;
   const paused = ledger.state.paused;
   const clock = ledger.state.stopMonitor.lastCheckedAt ?? new Date().toISOString();
   const monitor = stopMonitorStatus(ledger, clock, 2 * DAY_MS);
   const demo = state.demo;
   const stepsLeft = active ? (demo.campaignId === active.id ? Math.max(0, (demo.total || 4) - demo.next) : 4) : 0;
   const equity = ledger.equityMils;
+
+    async function startModel() {
+    const o = await actions.paperModelStart();
+    if (!o) actions.setNotice("Interpreter error; see the banner above. Nothing was queued.");
+  }
+
+  async function stepModel() {
+    const out = await actions.paperModelStep();
+    if (!out) {
+      actions.setNotice("No demo bar to run, or a call is already in flight.");
+      return;
+    }
+    if (out.rules?.exited) {
+      actions.setNotice(`Synthetic demo bar: ${out.rules.exited.reason} exit at ${fmtPrice(out.rules.exited.price, active?.root ?? "NQ")}. Not market evidence.`);
+      return;
+    }
+    actions.setNotice(
+      out.applied === "tighten"
+        ? "Model tightened the resting stop; the ratchet was re-checked before it was written."
+        : out.applied === "exit"
+          ? "Model asked to close. The engine exits at the next executable observation; no fill was claimed."
+          : `Synthetic demo bar processed. ${out.reasons.join("; ") || "Model proposed no change."}`,
+    );
+  }
 
   function start() {
     const o = actions.paperStart();
@@ -508,7 +547,7 @@ function PaperTicket({ snapshot, active }: { snapshot: SignalSnapshot | null; ac
   return (
     <>
       <p className="cp-small">
-        PAPER ONLY · deterministic engine · {paused ? "PAUSED (no new entries; stops still monitored)" : "running"} · stop monitor {monitor.healthy ? "healthy" : "not healthy"} ({monitor.lastCheckedAt ? `last check ${fmtTime(monitor.lastCheckedAt)}` : "never ran"}) · equity {fmtMoney(equity)} USD · Synthetic demo bars, not market data
+        {modelMode ? "PAPER (MODEL) · interpreter proposes, risk engine clamps, deterministic engine executes" : "PAPER (RULES) · deterministic engine only"} · {paused ? "PAUSED (no new entries; stops still monitored)" : "running"} · stop monitor {monitor.healthy ? "healthy" : "not healthy"} ({monitor.lastCheckedAt ? `last check ${fmtTime(monitor.lastCheckedAt)}` : "never ran"}) · equity {fmtMoney(equity)} USD · Synthetic demo bars, not market data
       </p>
       {active ? (
         <>
@@ -537,8 +576,20 @@ function PaperTicket({ snapshot, active }: { snapshot: SignalSnapshot | null; ac
         <p className="cp-small">Select a market.</p>
       )}
       <div className="cp-actions cp-footer">
-        <button type="button" className="cp-main" onClick={start} disabled={!!active || paused}>Start paper engine</button>
-        <button type="button" onClick={step} disabled={!active || stepsLeft === 0}>Run paper step{active ? ` (${stepsLeft} synthetic bars left)` : ""}</button>
+        {modelMode && (
+          <button
+            type="button"
+            aria-pressed={state.modelAssist}
+            onClick={() => actions.setModelAssist(!state.modelAssist)}
+            title="With model assist off this ledger runs the rules engine alone, so the loop's contribution stays measurable."
+          >
+            Model assist {state.modelAssist ? "on" : "off"}
+          </button>
+        )}
+        <button type="button" className="cp-main" onClick={modelMode ? () => void startModel() : start} disabled={!!active || paused || state.modelInFlight}>
+          {modelMode ? (state.modelInFlight ? "Asking model…" : "Start with a model reading") : "Start paper engine"}
+        </button>
+        <button type="button" onClick={modelMode ? () => void stepModel() : step} disabled={!active || stepsLeft === 0 || state.modelInFlight}>Run paper step{active ? ` (${stepsLeft} synthetic bars left)` : ""}</button>
         {paused ? (
           <button type="button" onClick={() => actions.paperResume()}>Resume</button>
         ) : (

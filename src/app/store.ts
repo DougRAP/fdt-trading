@@ -18,7 +18,10 @@ import { MemoryStorage, loadLedger, saveLedger, type StorageLike } from "../ledg
 import { onDecisionBar, onExecutableBar, onObservationBar, pause as enginePause, resume as engineResume, type DecisionOutcome, type ObservationOutcome } from "../paper/engine";
 import { candidateSide } from "./plan";
 
-export type DrawerId = "formula" | "journal" | "settings" | "results" | null;
+export type DrawerId = "formula" | "journal" | "settings" | "results" | "memory" | null;
+
+/** Mode labels (D18). */
+export const MODE_LABELS: Record<Mode, string> = { manual: "Manual journal", paper: "Paper (rules)", paperModel: "Paper (model)" };
 
 export const CONFIG_KEY = "fdt.v1.config";
 
@@ -240,38 +243,8 @@ export function useAppStore(storage: StorageLike, deps: AppDeps = {}): AppStore 
       cfg: ref.current.cfg,
     });
 
-    const reading = (mode: Mode, result: ModelDecisionResult): ModelReading => ({
-      mode,
-      kind: result.kind,
-      barEnd: result.request?.barEnd ?? null,
-      response: result.response,
-      clamped: result.clamped,
-      reasons: result.reasons,
-      at: new Date().toISOString(),
-    });
-
-    const noticeFor = (result: ModelDecisionResult): string => {
-      switch (result.kind) {
-        case "queued":
-          return `Model proposal cleared the risk engine and was queued as ${result.campaignId}. Nothing is filled until the next synthetic bar.`;
-        case "advisory":
-          return "Model reading recorded in the manual journal. Nothing was executed; record your own fills.";
-        case "no-proposal":
-          return "Model proposed no trade on this bar.";
-        case "not-executable":
-          return `Proposal logged, not executed: ${result.reasons.join("; ")}`;
-        case "rejected":
-          return `Model answer refused and logged unused: ${result.reasons.join("; ")}`;
-        case "call-failed":
-          return `Interpreter call failed: ${result.reasons.join("; ")}`;
-        case "already-answered":
-          return "This bar already has a stored model answer; no new call was made.";
-        case "position-active":
-          return "A paper (model) position is already active.";
-        case "paused":
-          return "Paper (model) engine is paused; no new entries.";
-      }
-    };
+    const reading = modelReadingFrom;
+    const noticeFor = noticeForModelResult;
 
     /** One interpreter call at a time, and never on a timer. */
     const runModel = async <T>(mode: Mode, fn: (engineInput: ModelEngineInput) => Promise<T | null>): Promise<T | null> => {
@@ -298,7 +271,7 @@ export function useAppStore(storage: StorageLike, deps: AppDeps = {}): AppStore 
     return {
       setMode(mode) {
         const active = ref.current.ledgers[mode].activeCampaign;
-        setState((s) => ({ ...s, mode, selectedRoot: active?.root ?? s.selectedRoot, notice: mode === "paper" ? "Paper mode uses a separate ledger. Nothing is sent to a broker." : "Manual journal. Record actual broker fills here; no broker connection." }));
+        setState((s) => ({ ...s, mode, selectedRoot: active?.root ?? s.selectedRoot, notice: MODE_NOTICES[mode] }));
       },
       select(root) {
         setState((s) => ({ ...s, selectedRoot: root }));
@@ -413,13 +386,15 @@ export function useAppStore(storage: StorageLike, deps: AppDeps = {}): AppStore 
         setState((s) => ({ ...s, modelAssist: on }));
       },
       paperPause() {
-        enginePause(ref.current.ledgers.paper, new Date().toISOString());
-        persist("paper");
+        const mode = ref.current.mode === "paperModel" ? "paperModel" : "paper";
+        enginePause(ref.current.ledgers[mode], new Date().toISOString());
+        persist(mode);
         bump();
       },
       paperResume() {
-        engineResume(ref.current.ledgers.paper, new Date().toISOString());
-        persist("paper");
+        const mode = ref.current.mode === "paperModel" ? "paperModel" : "paper";
+        engineResume(ref.current.ledgers[mode], new Date().toISOString());
+        persist(mode);
         bump();
       },
       setNotice(text) {
@@ -453,3 +428,47 @@ export function ledgerOf(state: AppState): Ledger {
 }
 
 export { candidateSide };
+
+/** Notice shown when the mode changes (D18 labels). */
+export const MODE_NOTICES: Record<Mode, string> = {
+  manual: "Manual journal. Record actual broker fills here; no broker connection.",
+  paper: "Paper (rules) uses its own ledger and the rules engine only. It is the control for comparison.",
+  paperModel: "Paper (model) uses its own ledger. The interpreter proposes, the risk engine clamps, the deterministic engine executes.",
+};
+
+/** Panel state for one interpreter result. Pure, so it can be tested without React. */
+export function modelReadingFrom(mode: Mode, result: ModelDecisionResult, at: string = new Date().toISOString()): ModelReading {
+  return {
+    mode,
+    kind: result.kind,
+    barEnd: result.request?.barEnd ?? null,
+    response: result.response,
+    clamped: result.clamped,
+    reasons: result.reasons,
+    at,
+  };
+}
+
+/** One sentence for the notice line. Never says an unexecuted proposal was acted on. */
+export function noticeForModelResult(result: ModelDecisionResult): string {
+  switch (result.kind) {
+    case "queued":
+      return `Model proposal cleared the risk engine and was queued as ${result.campaignId}. Nothing is filled until the next synthetic bar.`;
+    case "advisory":
+      return "Model reading recorded in this ledger. Nothing was executed; record your own fills.";
+    case "no-proposal":
+      return "Model proposed no trade on this bar.";
+    case "not-executable":
+      return `Proposal logged, not executed: ${result.reasons.join("; ")}`;
+    case "rejected":
+      return `Model answer refused and logged unused: ${result.reasons.join("; ")}`;
+    case "call-failed":
+      return `Interpreter call failed: ${result.reasons.join("; ")}`;
+    case "already-answered":
+      return "This bar already has a stored model answer; no new call was made.";
+    case "position-active":
+      return "A paper (model) position is already active.";
+    case "paused":
+      return "Paper (model) engine is paused; no new entries.";
+  }
+}

@@ -16,6 +16,8 @@ export function ResultsDetails() {
   const stats = ledger.stats();
   const byRoot = ledger.statsByRoot();
   const dd = ledger.maxDrawdown();
+  const interpreter = ledger.state.interpreter;
+  const usage = interpreter.usage;
   const rows: [string, RootStats][] = [["All", stats], ...(Object.entries(byRoot) as [string, RootStats][])];
   return (
     <Drawer open={state.drawer === "results"} title={`Results details · ${state.mode === "manual" ? "Manual journal" : "Paper only"} · All time · fixture session · USD`} onClose={() => actions.openDrawer(null)}>
@@ -51,6 +53,37 @@ export function ResultsDetails() {
       </div>
       <p className="cp-small">
         Max account drawdown (marked equity vs running peak, open positions included, cash flows adjust the peak basis): {dd ? `${fmtPct(dd.value, 3)} · peak ${fmtMoney(dd.peakMils)} · trough ${fmtMoney(dd.troughMils)} · ${dd.points} points` : EM_DASH}. Win rate uses closed campaigns only. Liabilities: not modeled (0). Realized results use recorded fills and fees.
+      </p>
+      <h3>Interpreter usage for this ledger</h3>
+      <div className="cp-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Calls</th>
+              <th scope="col">Input tokens</th>
+              <th scope="col">Cached input</th>
+              <th scope="col">Output tokens</th>
+              <th scope="col">Cost estimate</th>
+              <th scope="col">Total latency</th>
+              <th scope="col">Memory epoch</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>{usage.calls || EM_DASH}</td>
+              <td>{usage.calls ? usage.inputTokens.toLocaleString("en-US") : EM_DASH}</td>
+              <td>{usage.calls ? usage.cachedInputTokens.toLocaleString("en-US") : EM_DASH}</td>
+              <td>{usage.calls ? usage.outputTokens.toLocaleString("en-US") : EM_DASH}</td>
+              <td>{usage.calls ? fmtMoney(usage.costEstimateMils) : EM_DASH}</td>
+              <td>{usage.calls ? `${usage.latencyMsTotal.toLocaleString("en-US")} ms` : EM_DASH}</td>
+              <td>{interpreter.memoryEpochId}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p className="cp-small">
+        Cost is an estimate from the configured price table in USD, not an invoice. Lessons in this epoch: {interpreter.lessons.length}; digest{" "}
+        {interpreter.digest ? `v${interpreter.digest.digest.version}` : EM_DASH}.
       </p>
     </Drawer>
   );

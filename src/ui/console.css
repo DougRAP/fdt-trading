@@ -50,7 +50,9 @@ summary { cursor: pointer; }
 .cp-panel { background: var(--cp-panel); border: 1px solid var(--cp-line); border-radius: 12px; padding: 12px; min-width: 0; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 6px; }
 .cp-panel > * { flex-shrink: 0; }
 .cp-ellipsis { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; display: block; }
-.cp-right { display: grid; grid-template-rows: minmax(0, 1.08fr) minmax(0, 0.92fr); gap: 16px; min-width: 0; min-height: 0; }
+.cp-right { display: grid; grid-template-rows: auto minmax(0, 1.08fr) minmax(0, 0.92fr); gap: 12px; min-width: 0; min-height: 0; }
+.cp-model { gap: 4px; }
+.cp-model .cp-expand { max-height: 40vh; overflow: auto; }
 
 .cp-agent { font-size: 12px; color: var(--cp-muted); padding-bottom: 5px; border-bottom: 1px solid var(--cp-line); }
 .cp-agent strong { color: var(--cp-good); font-weight: 500; }
@@ -106,7 +108,7 @@ dialog.cp-dialog::backdrop { background: rgba(0, 0, 0, .35); }
 @media (max-width: 760px) {
   .cp-app { padding: 10px; }
   .cp-layout { grid-template-columns: 1fr; height: auto; min-height: 0; }
-  .cp-right { grid-template-rows: auto auto; }
+  .cp-right { grid-template-rows: auto auto auto; }
   .cp-panel { overflow: visible; }
   .cp-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
