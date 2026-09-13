@@ -1,4 +1,4 @@
-import { ledgerOf, useApp } from "../app/store";
+import { MODE_LABELS, ledgerOf, useApp } from "../app/store";
 import type { RootStats } from "../ledger/ledger";
 import { Drawer } from "./Drawer";
 import { EM_DASH, fmtMoney, fmtNum, fmtPct } from "./format";
@@ -20,7 +20,7 @@ export function ResultsDetails() {
   const usage = interpreter.usage;
   const rows: [string, RootStats][] = [["All", stats], ...(Object.entries(byRoot) as [string, RootStats][])];
   return (
-    <Drawer open={state.drawer === "results"} title={`Results details · ${state.mode === "manual" ? "Manual journal" : "Paper only"} · All time · fixture session · USD`} onClose={() => actions.openDrawer(null)}>
+    <Drawer open={state.drawer === "results"} title={`Results details · ${MODE_LABELS[state.mode]} · All time · fixture session · USD`} onClose={() => actions.openDrawer(null)}>
       <div className="cp-scroll">
         <table>
           <thead>
@@ -53,6 +53,9 @@ export function ResultsDetails() {
       </div>
       <p className="cp-small">
         Max account drawdown (marked equity vs running peak, open positions included, cash flows adjust the peak basis): {dd ? `${fmtPct(dd.value, 3)} · peak ${fmtMoney(dd.peakMils)} · trough ${fmtMoney(dd.troughMils)} · ${dd.points} points` : EM_DASH}. Win rate uses closed campaigns only. Liabilities: not modeled (0). Realized results use recorded fills and fees.
+      </p>
+      <p className="cp-small">
+        Separate ledgers by mode · Results start empty · Drawdown is account-level, never assigned to a single market.
       </p>
       <h3>Interpreter usage for this ledger</h3>
       <div className="cp-scroll">

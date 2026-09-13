@@ -20,9 +20,8 @@ export function Header() {
           ))}
         </div>
         <div className="cp-meta">
-          <label>
-            Signal interval
-            <select aria-label="Signal interval" value={state.cfg.interval} onChange={() => undefined} title="Daily is provisional. Other intervals need complete, aligned datasets. Changing the interval does not optimize the strategy.">
+          <label aria-hidden="true" className="cp-interval">
+            <select aria-label="Signal interval" value={state.cfg.interval} onChange={() => undefined} title="Signal interval. Daily is provisional; other intervals need complete, aligned datasets. Changing the interval does not optimize the strategy.">
               {state.cfg.intervalOptions.map((o) => (
                 <option key={o.id} value={o.id} disabled={!o.enabled} title={o.disabledReason}>
                   {o.label}

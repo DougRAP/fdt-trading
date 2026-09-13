@@ -130,6 +130,9 @@ describe("model reading panel (P2.6)", () => {
     expect(html).toContain("ENTER NQ");
     expect(html).toContain("Participation is building in NQ");
     expect(html).toContain("Ask model");
+    // the summary and the controls share the title row
+    expect(html).toContain("cp-model-head");
+    expect(html).toContain("cp-model-summary");
     expect(html).toContain('aria-expanded="false"');
     // collapsed: the per-market table is not rendered
     expect(html).not.toContain("Price response");
@@ -157,9 +160,13 @@ describe("model reading panel (P2.6)", () => {
     expect(expanded).toContain("not a probability");
   });
 
-  it("says nothing recorded before a call and never uses the forbidden words", () => {
+  it("collapses to a single row with no reading and never uses the forbidden words", () => {
     const html = render(null);
-    expect(html).toContain("No model reading yet");
+    expect(html).toContain("No reading yet");
+    // the empty state is one row: no hypothesis line, no clamp line, no detail block
+    expect(html).not.toContain("cp-flag");
+    expect(html).not.toContain("Price response");
+    expect(html).toContain("Ask model");
     expect(html).not.toMatch(/confidence/i);
     const allowed = html.replace(/not a probability/gi, "");
     expect(allowed).not.toMatch(/probabilit/i);

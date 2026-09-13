@@ -35,15 +35,34 @@ export function TradeTicket() {
   const snapshot = active ? (state.snapshots.find((s) => s.root === active.root) ?? active.frozenSnapshot) : selectedSnapshot(state);
   const title = active ? `${active.contract} · ${active.state === "PENDING" ? "Pending paper fill" : "Position"}` : snapshot ? `${INSTRUMENTS[snapshot.root].contract} · Trade ticket` : "Trade ticket";
   const stage = active ? active.state : "PLAN";
+  const note = ticketNote(state.mode, snapshot, active, state.snapshots.some((s) => s.status === "QUALIFIED"));
   return (
     <section className="cp-panel" aria-labelledby="ticket-title">
-      <div className="cp-row">
+      <div className="cp-row cp-ticket-head">
         <h2 id="ticket-title">{title}</h2>
         <span className="cp-status">{stage}</span>
+        {note && (
+          <span className="cp-small cp-ellipsis cp-ticket-note" title={note}>
+            {note}
+          </span>
+        )}
       </div>
       {state.mode === "manual" ? <ManualTicket snapshot={snapshot} active={active} /> : <PaperTicket snapshot={snapshot} active={active} />}
     </section>
   );
+}
+
+/** One line of context for the title row, so the panel needs no separate subtitle. */
+function ticketNote(mode: string, snapshot: SignalSnapshot | null, active: Campaign | null, anyQualified: boolean): string | null {
+  if (active || mode !== "manual") return null;
+  if (!snapshot) return "Select a market.";
+  const lead =
+    snapshot.status === "QUALIFIED"
+      ? `${snapshot.root} qualifies (${snapshot.displaySide}).`
+      : anyQualified
+        ? `${snapshot.root} does not qualify; inspecting a non-qualifying market.`
+        : "No qualifying trade.";
+  return `${lead} Recording is journaling only; a draft is not a fill.`;
 }
 
 function PlannedGroup({ snapshot, side, equityMils, contractsOverride, modelStopTicks }: { snapshot: SignalSnapshot; side: Side | null; equityMils: Mils | null; contractsOverride?: number; modelStopTicks?: Ticks | null }) {
@@ -127,12 +146,9 @@ function ManualTicket({ snapshot, active }: { snapshot: SignalSnapshot | null; a
   // Decision 4: the ticket drafts from the model proposal when one exists for this market.
   const clamped = state.modelReading?.clamped ?? null;
   const modelEnter = clamped && clamped.action === "enter" && clamped.root === snapshot.root ? clamped : null;
+  void anyQualified;
   return (
     <>
-      <p className="cp-small">
-        {snapshot.status === "QUALIFIED" ? `${snapshot.root} qualifies (${snapshot.displaySide}). ` : anyQualified ? `${snapshot.root} does not qualify; inspecting a non-qualifying market. ` : "No qualifying trade. "}
-        Recording is journaling only; a draft is not a fill.
-      </p>
       <PlannedGroup snapshot={snapshot} side={side} equityMils={equity} modelStopTicks={modelEnter?.stopTicks ?? null} />
       <ManualEntryForm
         key={`${snapshot.root}:${state.configLabel}:${equity ?? "none"}:${modelEnter?.stopTicks ?? "plan"}`}

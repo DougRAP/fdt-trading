@@ -49,29 +49,33 @@ export function ModelReading({ initiallyExpanded = false }: ModelReadingProps) {
   const usage = ledger.state.interpreter.usage;
   const cfg = state.cfg.interpreter;
   const notice = clampedLine(reading?.clamped ?? null, reading?.reasons ?? []);
-  const hypothesis = response?.hypothesis ?? "No model reading yet. Ask the model to read the current bar.";
+  const summary = response
+    ? `${cfg.model} · ${cfg.promptVersion} · bar ${reading?.barEnd ? fmtTime(reading.barEnd) : EM_DASH} · evidence ${response.evidenceStrength} · ${actionLine(response)}${
+        reading && reading.kind !== "advisory" && reading.kind !== "queued" ? ` · ${reading.kind}` : ""
+      }`
+    : `No reading yet · ${cfg.model} · ${cfg.promptVersion}`;
 
   return (
     <section className="cp-panel cp-model" aria-labelledby="model-reading-title">
-      <div className="cp-row">
+      <div className="cp-row cp-model-head">
         <h2 id="model-reading-title">Model reading</h2>
+        <span className="cp-small cp-ellipsis cp-model-summary" title={summary}>
+          {summary}
+        </span>
         <span className="cp-actions">
-          <button type="button" onClick={() => void actions.askModel()} disabled={state.modelInFlight} aria-busy={state.modelInFlight}>
+          <button type="button" className="cp-drawer-btn" onClick={() => void actions.askModel()} disabled={state.modelInFlight} aria-busy={state.modelInFlight}>
             {state.modelInFlight ? "Asking model…" : "Ask model"}
           </button>
-          <button type="button" aria-expanded={expanded} aria-controls="model-reading-detail" onClick={() => setExpanded((v) => !v)}>
+          <button type="button" className="cp-drawer-btn" aria-expanded={expanded} aria-controls="model-reading-detail" onClick={() => setExpanded((v) => !v)}>
             {expanded ? "Collapse" : "Expand"}
           </button>
         </span>
       </div>
-      <p className="cp-small cp-ellipsis" title={`${cfg.model} · ${cfg.promptVersion} · ${reading?.barEnd ?? "no bar"}`}>
-        {cfg.model} · {cfg.promptVersion} · bar {reading?.barEnd ? fmtTime(reading.barEnd) : EM_DASH} · evidence{" "}
-        {response ? response.evidenceStrength : EM_DASH} · {actionLine(response)}
-        {reading && reading.kind !== "advisory" && reading.kind !== "queued" ? ` · ${reading.kind}` : ""}
-      </p>
-      <p className="cp-small cp-ellipsis" title={hypothesis}>
-        {hypothesis}
-      </p>
+      {response && (
+        <p className="cp-small cp-ellipsis" title={response.hypothesis}>
+          {response.hypothesis}
+        </p>
+      )}
       {notice && (
         <p className="cp-flag cp-ellipsis" title={notice} role="status">
           {notice}

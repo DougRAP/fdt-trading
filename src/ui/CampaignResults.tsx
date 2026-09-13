@@ -1,4 +1,4 @@
-import { ledgerOf, useApp } from "../app/store";
+import { MODE_LABELS, ledgerOf, useApp } from "../app/store";
 import { EM_DASH, fmtMoney, fmtNum, fmtPct } from "./format";
 
 export function CampaignResults() {
@@ -7,12 +7,17 @@ export function CampaignResults() {
   const stats = ledger.stats();
   const byRoot = ledger.statsByRoot();
   const dd = ledger.maxDrawdown();
-  const modeLabel = state.mode === "manual" ? "Manual journal" : "Paper only";
+  const modeLabel = MODE_LABELS[state.mode];
   return (
     <section className="cp-panel" aria-labelledby="results-title">
       <div className="cp-row">
         <h2 id="results-title">Campaign results</h2>
-        <span className="cp-small">All time · fixture session · {modeLabel} · USD</span>
+        <span className="cp-small cp-ellipsis cp-results-label" title={`All time · fixture session · ${modeLabel} · USD`}>
+          All time · fixture session · {modeLabel} · USD
+        </span>
+        <button type="button" className="cp-drawer-btn" onClick={() => actions.openDrawer("results")}>
+          Details
+        </button>
       </div>
       <div className="cp-results">
         <div>
@@ -33,7 +38,7 @@ export function CampaignResults() {
         </div>
       </div>
       <div className="cp-scroll">
-        <table>
+        <table className="cp-results-table">
           <thead>
             <tr>
               <th scope="col">Market</th>
@@ -57,10 +62,6 @@ export function CampaignResults() {
             })}
           </tbody>
         </table>
-      </div>
-      <div className="cp-row cp-footer">
-        <span className="cp-small">Separate ledgers by mode · Results start empty · Drawdown is account-level, not per market</span>
-        <button type="button" onClick={() => actions.openDrawer("results")}>Details</button>
       </div>
     </section>
   );
