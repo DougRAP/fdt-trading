@@ -64,6 +64,96 @@ Everything is fixture in this release. The boundaries are explicit so nothing sy
 
 Editable in the Model settings drawer: entry threshold, directional-breadth threshold, stop base coefficient, risk budget fraction, A-small warning level. Saving writes a new label (`0.1+user1`, `0.1+user2`, …) to `fdt.v1.config`; windows (20/60/20) and the interval are fixed in v0.1. Every campaign stores a frozen copy of the config it was entered under; saving new settings never changes a running campaign.
 
+## Phase 2: the interpreter layer
+
+A model reads the calculator's output and proposes; it never computes a number and never executes.
+`INTERPRETER_ADDENDUM.md` is the spec. Status is unchanged: research tool, fixture data, no broker.
+
+**Division of responsibility.** The calculator owns Q, A, H, u, sigma, S, qualification, ATR, D and
+ranking. The interpreter owns the reading of how a signal developed, cross-market context, a
+hypothesis, a proposal and the evidence that would falsify it. The risk engine clamps every proposal.
+A person (manual) or the deterministic paper engine executes. Sizing is always computed by code from
+the clamped stop.
+
+### The function is the only network path
+
+- Browser → `/api/interpret` (`netlify/functions/interpret.ts`) → Anthropic. Nothing else calls out.
+- `ANTHROPIC_API_KEY` is set on the Netlify site only, never in the repository and never in the
+  browser. The SDK reads it from the environment; the code never passes it explicitly, logs it, or
+  returns it. `npm run check:bundle` fails the build if the key prefix, the variable name or the SDK
+  appears in `dist/`.
+- The function refuses any model outside its allowed list (`claude-opus-5`, `claude-sonnet-5`,
+  `claude-fable-5-1`), any effort outside `low | medium | high | xhigh | max`, any body over 512 KB and
+  any method other than POST. It validates the model's JSON against the same schema the browser uses
+  before returning it; a refusal, a truncated answer or a failed validation comes back as
+  `{ ok: false, reason }` with status 422 and is logged as `INTERPRETER_REJECTED`.
+- Defaults live in `modelConfig.interpreter`: model `claude-opus-5`, effort `high` for both decision
+  and observation calls, prompt version `interp-0.1`, 10 bars of history, 20 proposal outcomes fed
+  back, 30 lessons. Every campaign freezes a copy.
+
+### Three ledgers
+
+| Mode | Key | What it is |
+|---|---|---|
+| Manual journal | `fdt.v1.manual` | What you did at your broker. |
+| Paper (rules) | `fdt.v1.paper` | The rules engine alone. **This is the control.** |
+| Paper (model) | `fdt.v1.paperModel` | Model-assisted: the interpreter proposes, the risk engine clamps, the deterministic engine executes. |
+
+They never mix. Comparing Paper (model) with Paper (rules) over the same bars is the only way the
+interpreter's contribution can be measured, so the control is kept even when it looks redundant.
+
+### Ask model vs a Paper (model) step (D22)
+
+- **Ask model** is available in every mode and runs on that click only. It records
+  `INTERPRETER_REQUEST` and `INTERPRETER_RESPONSE` (or `INTERPRETER_REJECTED`) in the active mode's
+  ledger, shows the reading and the clamped proposal, and executes nothing. In manual mode the ticket
+  then drafts from the proposal for that market; you still record your own fill.
+- **Paper (model)** executes, and only on your click. "Start with a model reading" makes one decision
+  call and queues the clamped entry; "Run paper step" runs the rules engine first (it owns the stop
+  test), then asks whether to hold, tighten or exit. A tighten is written as a resting stop after the
+  ratchet is re-checked; an exit becomes `CLOSE_REQUESTED`, never a fill. The **Model assist** toggle
+  turns the calls off so the same ledger can run rules-only.
+- Nothing runs on a timer. A repeated bar makes no second call: a stored response for that bar and
+  call kind short-circuits it, and every event id is derived from bar, model and prompt version.
+
+### Feedback loop and memory
+
+Each request carries the last 20 proposals with outcomes computed from the ledger (executed, clamped,
+rejected, fill, exit reason, realized R, bars held) and whether each invalidation condition the model
+named appeared before the stop did. After a campaign closes the model writes a lesson
+(`INTERPRETER_LESSON`); once more than 30 accumulate, older ones are compacted into an
+`INTERPRETER_DIGEST`. Lessons and digests change only what the model reads: they cannot move a
+threshold, a size, a stop bound or a candidate rule.
+
+"Reset model memory" in the Model memory drawer **archives** the current epoch and starts a new one.
+Nothing is deleted: every lesson stays in the append-only log under its epoch, and the reset itself is
+an event (`INTERPRETER_MEMORY_RESET`).
+
+### Cost estimates (D23)
+
+Every call records input, cached-input and output tokens, the model id, latency and an estimated cost
+in mils. The estimate uses a small price table in `src/interpreter/types.ts`
+(`INTERPRETER_PRICE_TABLE`, per million tokens): Opus 5 15.00 input / 1.50 cached / 75.00 output;
+Sonnet 5 3.00 / 0.30 / 15.00; Fable 5.1 30.00 / 3.00 / 150.00. Cache writes are counted as input and
+only cache reads as cached input, so the figure is not understated. It is labeled **estimate**
+everywhere it appears and is not billing data.
+
+### What is still fixture in phase 2
+
+- The 10-bar snapshot history (D21, `src/fixtures/snapshotHistory.ts`) is derived arithmetically from
+  the existing fixture snapshot, labeled synthetic in `dataSource` and `inputSourceIds`. It is not
+  market history.
+- The paper demo bars (`src/fixtures/paperBars.ts`) are synthetic, as before.
+- Sigma constants, cost fixture and synthetic contract labels are unchanged from phase 1.
+
+### Local development
+
+- `npm run dev` serves the console but **not** the function. "Ask model" then fails on the missing
+  endpoint and records `INTERPRETER_REJECTED` with the transport reason; the rest of the console works.
+- `netlify dev` serves both. It needs `ANTHROPIC_API_KEY` in your environment or a local `.env`
+  (gitignored, never committed). No key is needed for anything except a live model call.
+- `npm run check` runs typecheck, tests, build and the bundle check.
+
 ## Missing before live data
 
 Not built. Each item must exist and be verified before any real data source is connected:
@@ -79,7 +169,15 @@ Not built. Each item must exist and be verified before any real data source is c
 9. Real cost tables per instrument and broker (today: the synthetic cost fixture).
 10. AI explanation layer. Not built. `explainSnapshot` in `src/ui/Observer.tsx` produces deterministic template text from the structured snapshot; no LLM is called and none can alter calculator outputs.
 11. Real-data freshness rules (`STALE` reasons are wired but only fixture freshness exists).
+12. Replayable signal history with outcomes. The interpreter reads 10 derived fixture bars today; any
+    comparison of Paper (model) with Paper (rules) needs a real replay adapter over held-out periods.
+13. A measured cost and latency record per model. The price table is an estimate from list prices; only
+    invoices and a real call log can confirm it.
+14. Evaluation of the feedback loop itself: the same sequences run with memory on and off, which needs
+    the replay adapter above before any conclusion.
+15. Provider retention and rate-limit posture for live use (the function retries a 429 once and maps
+    every other error to a status; nothing is queued or resumed).
 
 ## Acceptance
 
-See `ACCEPTANCE.md` for the brief's ten checks with test evidence.
+See `ACCEPTANCE.md` for the brief's ten checks plus the phase-2 checks A11-A16, with test evidence.

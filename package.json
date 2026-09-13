@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json",
-    "check": "npm run typecheck && npm test && npm run build"
+    "check": "npm run typecheck && npm test && npm run build && npm run check:bundle",
+    "check:bundle": "node scripts/check-bundle.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.125.0",
