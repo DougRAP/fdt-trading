@@ -5,7 +5,7 @@
 import { modelConfig, type ModelConfig } from "../config/modelConfig";
 import type { Side, SignalSnapshot } from "../formula/types";
 import { INSTRUMENTS, type InstrumentMetadata } from "../instruments/metadata";
-import type { Mils } from "../numerics/money";
+import { mils, type Mils } from "../numerics/money";
 import { ticks, type Ticks } from "../numerics/ticks";
 import { MARGIN_NOTE, modeledEntryFill, modeledStopExitFill, perContractRisk, positionSize, type PerContractRisk, type PositionSize } from "../sizing/sizing";
 import { initialStop, stopDistance, type StopDistance } from "../stops/stops";
@@ -72,7 +72,7 @@ export function draftPlan(
     perContractRisk: risk,
     sizing,
     contracts,
-    riskMils: (risk.totalMils * contracts) as Mils,
+    riskMils: mils(risk.totalMils * contracts),
     pctOfEquity: equityMils !== null && equityMils > 0 ? (risk.totalMils * contracts) / equityMils : null,
     marginNote: MARGIN_NOTE,
   };

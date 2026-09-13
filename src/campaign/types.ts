@@ -52,6 +52,8 @@ export interface CampaignQueuedEvent extends EventBase {
 export interface EntryFillEvent extends EventBase {
   type: "ENTRY_FILL";
   campaignId: string;
+  /** Filled side. If it differs from the planned side on the first fill, the campaign takes this side (a recorded deviation). */
+  side: Side;
   quantity: number;
   price: Ticks;
   feesMils: Mils;
@@ -99,6 +101,8 @@ export interface MarkEvent extends EventBase {
   price: Ticks;
   observedAt: string;
   source: string;
+  /** True only for a completed bar close; only completed closes advance the trailing-stop reference. */
+  completedClose: boolean;
 }
 
 export interface CashFlowEvent extends EventBase {
@@ -153,6 +157,8 @@ export type OrderEvent = EntryFillEvent | ExitFillEvent;
 export interface Fill {
   eventId: string;
   kind: "entry" | "exit";
+  /** Present on entry fills. */
+  side?: Side;
   quantity: number;
   price: Ticks;
   feesMils: Mils;

@@ -41,7 +41,7 @@ describe("synthetic demo bars", () => {
     expect(ledger.campaigns[0]!.fills.every((f) => !f.actual)).toBe(true);
   });
 
-  it("short orientation mirrors and ZN/GC have no bars", () => {
+  it("short orientation mirrors; ZN/GC still yield bars but are never selected (breadth undefined)", () => {
     const rty = snaps.find((s) => s.root === "RTY")!;
     const bars = demoBarsFor(rty, -1);
     expect(bars[0]!.open).toBeLessThan(rty.raw.closeT!);

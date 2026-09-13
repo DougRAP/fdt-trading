@@ -27,11 +27,12 @@ export interface ManualEntryInput {
   id: string;
   campaignId: string;
   root: InstrumentRoot;
+  /** Filled side (what the broker actually did). Differs from planned.side only as a recorded deviation. */
   side: Side;
   /** Decision snapshot to freeze with the campaign. */
   snapshot: SignalSnapshot;
-  /** Planned values shown on the ticket. */
-  planned: { entry: Ticks; stop: Ticks; contracts: number };
+  /** Planned values shown on the ticket, including the planned side. */
+  planned: { side: Side; entry: Ticks; stop: Ticks; contracts: number };
   /** Actual broker fill. */
   fill: { price: Ticks; quantity: number; filledAt: string; timezone: string; feesMils: Mils };
   /** Required when the actual fill differs from the plan. */
@@ -54,19 +55,22 @@ export function recordEntryFill(input: ManualEntryInput): LedgerEvent[] {
   const inst = INSTRUMENTS[input.root];
   const cost = cfg.costs[input.root];
   const { planned, fill } = input;
-  const deviates = fill.price !== planned.entry || fill.quantity !== planned.contracts;
-  if (deviates && !input.deviationReason) throw new LedgerError("deviationReason is required when the actual fill differs from the plan");
+  const deviates = fill.price !== planned.entry || fill.quantity !== planned.contracts || input.side !== planned.side;
+  if (deviates && !input.deviationReason) throw new LedgerError("deviationReason is required when the actual fill differs from the plan (price, contracts or side)");
   if (!Number.isInteger(fill.quantity) || fill.quantity <= 0) throw new LedgerError("fill quantity must be a positive integer");
 
+  // Decision D for the planned side (plan) and for the filled side (actual stop); both from the decision snapshot.
+  const plannedDist = stopDistance(input.snapshot.raw.atr20Ticks, input.snapshot.H, planned.side, cfg);
   const dist = stopDistance(input.snapshot.raw.atr20Ticks, input.snapshot.H, input.side, cfg);
+  if (!plannedDist.ok) throw new LedgerError(`cannot record entry: ${plannedDist.reason.detail}`);
   if (!dist.ok) throw new LedgerError(`cannot record entry: ${dist.reason.detail}`);
 
   // Plan: per-contract risk from the planned entry and planned stop with the documented cost convention.
-  const plannedExit = modeledStopExitFill(planned.stop, input.side, cost).fill;
+  const plannedExit = modeledStopExitFill(planned.stop, planned.side, cost).fill;
   const plannedRisk = perContractRisk({ entryFill: planned.entry, stopExitFill: plannedExit, tickValueMils: inst.tickValueMils, cost });
   const sizing = positionSize({ equityMils: input.equityMils, perContractRiskMils: plannedRisk.totalMils, cfg });
 
-  // Actual: initial stop from the actual fill and the decision snapshot's D; risk from the actual fill.
+  // Actual: initial stop from the actual fill and the decision snapshot's D for the filled side; risk from the actual fill.
   const stop = initialStop({ side: input.side, entryFill: fill.price, distance: dist.value, calculatedAt: input.snapshot.availableAt });
   const actualExit = modeledStopExitFill(stop.stop, input.side, cost).fill;
   const actualRisk = perContractRisk({ entryFill: fill.price, stopExitFill: actualExit, tickValueMils: inst.tickValueMils, cost });
@@ -80,7 +84,7 @@ export function recordEntryFill(input: ManualEntryInput): LedgerEvent[] {
     mode: "manual",
     root: input.root,
     contract: inst.contract,
-    side: input.side,
+    side: planned.side,
     plan: {
       contracts: planned.contracts,
       plannedEntry: planned.entry,
@@ -91,7 +95,7 @@ export function recordEntryFill(input: ManualEntryInput): LedgerEvent[] {
     },
     frozenConfig: freezeModelConfig(cfg),
     frozenSnapshot: structuredClone(input.snapshot),
-    decisionDistance: dist.value,
+    decisionDistance: plannedDist.value,
   };
   const entry: EntryFillEvent = {
     id: `${input.id}:fill`,
@@ -99,6 +103,7 @@ export function recordEntryFill(input: ManualEntryInput): LedgerEvent[] {
     timestamp: input.recordedAt,
     actual: true,
     campaignId: input.campaignId,
+    side: input.side,
     quantity: fill.quantity,
     price: fill.price,
     feesMils: fill.feesMils,
@@ -176,6 +181,7 @@ export function recordBrokerStop(input: {
   };
 }
 
+/** An intraday/quote mark: updates P&L and equity, never the trailing-stop reference. */
 export function recordMark(input: { id: string; root: InstrumentRoot; price: Ticks; observedAt: string; source: string; recordedAt?: string }): MarkEvent {
   return {
     id: input.id,
@@ -186,6 +192,22 @@ export function recordMark(input: { id: string; root: InstrumentRoot; price: Tic
     price: input.price,
     observedAt: input.observedAt,
     source: input.source,
+    completedClose: false,
+  };
+}
+
+/** A completed bar close: the only manual path that advances the highest/lowest completed close. */
+export function recordCompletedClose(input: { id: string; root: InstrumentRoot; price: Ticks; barEnd: string; recordedAt?: string }): MarkEvent {
+  return {
+    id: input.id,
+    type: "MARK",
+    timestamp: input.recordedAt ?? input.barEnd,
+    actual: true,
+    root: input.root,
+    price: input.price,
+    observedAt: input.barEnd,
+    source: "manual-completed-close",
+    completedClose: true,
   };
 }
 

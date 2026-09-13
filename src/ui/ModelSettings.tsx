@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { newEventId } from "../app/ids";
 import { overridesOf, useApp, type ConfigOverrides } from "../app/store";
 import { recordCashFlow } from "../campaign/manual";
 import { NumericError } from "../numerics/ticks";
@@ -40,7 +41,7 @@ export function ModelSettings() {
       const current = manual.equityMils;
       const delta = subMils(target, current);
       const at = new Date().toISOString();
-      const err = actions.append("manual", [recordCashFlow({ id: `manual:cash:${at}`, amountMils: delta, note: seeded ? "manual account equity adjusted (user-entered)" : "manual account equity seed (user-entered)", at })]);
+      const err = actions.append("manual", [recordCashFlow({ id: newEventId("manual:cash"), amountMils: delta, note: seeded ? "manual account equity adjusted (user-entered)" : "manual account equity seed (user-entered)", at })]);
       setError(err);
       if (!err) setEquityText("");
     } catch (e) {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { campaignFlags } from "../campaign/pnl";
 import { fixtureSnapshots } from "../fixtures/snapshots";
 import { INSTRUMENTS } from "../instruments/metadata";
+import { modelConfig } from "../config/modelConfig";
 import { Ledger, maxDrawdown } from "../ledger/ledger";
 import { mils } from "../numerics/money";
 import { toTicks, type Ticks } from "../numerics/ticks";
@@ -20,7 +21,7 @@ function bar(day: number, o: string, h: string, l: string, c: string, root: Engi
 function queued(): Ledger {
   const ledger = new Ledger("paper");
   const d = onDecisionBar(ledger, SNAPS, EQUITY);
-  expect(d).toEqual({ kind: "queued", campaignId: "paper:NQ:2026-01-02T21:00:00Z", root: "NQ", contracts: 2 });
+  expect(d).toEqual({ kind: "queued", campaignId: "paper:NQ:2026-01-02T21:00:00Z", root: "NQ", contracts: 2, skipped: [] });
   return ledger;
 }
 
@@ -48,9 +49,36 @@ describe("decision bar", () => {
     expect(ledger.events).toHaveLength(0);
   });
 
-  it("zero size => skip; paused => no entries; active position => no new decision", () => {
+  it("unsizeable top candidate falls through to the next sizeable one, with the skip recorded", () => {
+    // budget 1,000,000 mils: NQ needs 1,060,000 per contract => skipped; ES needs 817,500 => 1 contract
     const small = new Ledger("paper", { startingEquityMils: mils(400_000_000) });
-    expect(onDecisionBar(small, SNAPS, mils(400_000_000))).toMatchObject({ kind: "skip", root: "NQ" });
+    const out = onDecisionBar(small, SNAPS, mils(400_000_000));
+    expect(out).toEqual({
+      kind: "queued",
+      campaignId: "paper:ES:2026-01-02T21:00:00Z",
+      root: "ES",
+      contracts: 1,
+      skipped: [{ root: "NQ", reason: "one contract risks 1,060.00, above the 1,000.00 budget" }],
+    });
+    const es = small.activeCampaign!;
+    expect(es.root).toBe("ES");
+    expect(es.plan.contracts).toBe(1);
+    expect(es.plan.perContractRisk.totalMils).toBe(817_500);
+    expect(es.plan.plannedEntry).toBe(toTicks("6000.25", INSTRUMENTS.ES.tick, "exact"));
+    expect(es.plan.plannedStop).toBe(toTicks("5984.25", INSTRUMENTS.ES.tick, "exact"));
+  });
+
+  it("all qualifying candidates unsizeable => skip with every reason listed", () => {
+    const tiny = new Ledger("paper", { startingEquityMils: mils(100_000_000) }); // budget 250,000
+    const out = onDecisionBar(tiny, SNAPS, mils(100_000_000));
+    expect(out.kind).toBe("skip");
+    if (out.kind !== "skip") throw new Error("expected skip");
+    expect(out.skipped.map((s) => s.root)).toEqual(["NQ", "ES"]);
+    expect(out.root).toBe("ES");
+    expect(tiny.events).toHaveLength(0);
+  });
+
+  it("paused => no entries; active position => no new decision", () => {
     const ledger = queued();
     expect(onDecisionBar(ledger, SNAPS, EQUITY)).toEqual({ kind: "position-active", campaignId: "paper:NQ:2026-01-02T21:00:00Z" });
     const paused = new Ledger("paper");
@@ -68,14 +96,48 @@ describe("decision bar", () => {
     expect(ledger.events).toHaveLength(events);
   });
 
-  it("a decision bar already used for a closed campaign is skipped, not reported as queued", () => {
+  it("a decision bar already used for a closed campaign is skipped for that root, and the next candidate is considered", () => {
     const ledger = queued();
     onExecutableBar(ledger, bar(5, "22000", "22010", "21940", "21990"), TRAIL); // stop hit in the fill bar => CLOSED
     expect(ledger.activeCampaign).toBeNull();
-    const n = ledger.events.length;
-    expect(onDecisionBar(ledger, SNAPS, EQUITY)).toEqual({ kind: "skip", root: "NQ", reason: "decision bar 2026-01-02T21:00:00Z already used for NQ" });
-    expect(ledger.events).toHaveLength(n);
-    expect(ledger.campaigns).toHaveLength(1);
+    const out = onDecisionBar(ledger, SNAPS, EQUITY);
+    expect(out).toMatchObject({ kind: "queued", root: "ES", skipped: [{ root: "NQ", reason: "decision bar 2026-01-02T21:00:00Z already used for NQ" }] });
+    expect(ledger.campaigns).toHaveLength(2);
+    // with only NQ qualifying, the used bar yields a skip and no events
+    const onlyNQ = SNAPS.filter((s) => s.root === "NQ" || s.status !== "QUALIFIED");
+    const single = queued();
+    onExecutableBar(single, bar(5, "22000", "22010", "21940", "21990"), TRAIL);
+    const n = single.events.length;
+    expect(onDecisionBar(single, onlyNQ, EQUITY)).toEqual({ kind: "skip", root: "NQ", reason: "decision bar 2026-01-02T21:00:00Z already used for NQ", skipped: [{ root: "NQ", reason: "decision bar 2026-01-02T21:00:00Z already used for NQ" }] });
+    expect(single.events).toHaveLength(n);
+  });
+
+  it("a running campaign is governed by its frozen config, not the cfg passed to later bars", () => {
+    const ledger = queued();
+    onExecutableBar(ledger, bar(5, "22000", "22050", "21980", "22040"), TRAIL);
+    const loosened = { ...modelConfig, stopBase: 0.5 }; // would give D = 100 x 1.1 = 110 ticks => 22062.50
+    const out = onObservationBar(ledger, bar(6, "22040", "22100", "21995", "22090"), TRAIL, loosened);
+    expect(out.exited).toBeNull();
+    expect(ledger.activeCampaign!.restingStop?.stop).toBe(px("22037.50"));
+    expect(ledger.activeCampaign!.restingStop?.stop).not.toBe(px("22062.50"));
+    expect(ledger.activeCampaign!.frozenConfig.stopBase).toBe(1.5);
+  });
+
+  it("DATA STALE clears when valid inputs return, even if the stop does not move", () => {
+    const ledger = queued();
+    onExecutableBar(ledger, bar(5, "22000", "22050", "21980", "22040"), TRAIL); // stop 21987.50
+    onObservationBar(ledger, bar(6, "22040", "22060", "22000", "22035"), null); // frozen; highest close stays 22040
+    expect(ledger.activeCampaign!.stopFrozenReason?.code).toBe("DATA_STALE");
+    expect(ledger.activeCampaign!.extremeClose).toBe(px("22040"));
+    // highest close 22040 - 52.5 = 21987.50 = current stop => unchanged, but re-issued as a valid trail stop
+    const out = onObservationBar(ledger, bar(7, "22035", "22050", "22000", "22020"), TRAIL);
+    expect(out.stopChanged).toBe(false);
+    expect(out.stopFrozen).toBe(false);
+    const c = ledger.activeCampaign!;
+    expect(c.restingStop?.stop).toBe(px("21987.50"));
+    expect(c.restingStop?.source).toBe("trail");
+    expect(c.stopFrozenReason).toBeNull();
+    expect(campaignFlags(c, ledger.state.marks.NQ!, false)).toEqual([]);
   });
 });
 
@@ -220,7 +282,7 @@ describe("executable bar fill and OHLC stop simulation (acceptance #7, #9)", () 
     expect(onDecisionBar(ledger, SNAPS, ledger.equityMils)).toEqual({ kind: "paused" });
   });
 
-  it("opening gap that pushes one-contract risk above the frozen budget cancels the pending campaign", () => {
+  it("a pending campaign whose frozen budget is below one contract's risk at fill time is cancelled, not filled", () => {
     const ledger = new Ledger("paper");
     onDecisionBar(ledger, SNAPS, EQUITY);
     const c = ledger.activeCampaign!;
@@ -254,7 +316,7 @@ describe("equity series and drawdown (acceptance #9)", () => {
     const series = ledger.equitySeries;
     expect(series.map((p) => p.freshness)).toEqual(["no-mark", "marked", "flat", "flat"]);
     expect(series.map((p) => p.equityMils)).toEqual([999_995_000, 1_001_585_000, 999_470_000, 999_470_000]);
-    const dd = maxDrawdown(series)!;
+    const dd = maxDrawdown(series, ledger.startingEquityMils)!;
     expect(dd.peakMils).toBe(1_001_585_000);
     expect(dd.troughMils).toBe(999_470_000);
     expect(dd.value).toBeCloseTo(2_115_000 / 1_001_585_000, 12);
@@ -262,7 +324,7 @@ describe("equity series and drawdown (acceptance #9)", () => {
     expect(dd.value).toBeGreaterThan(530_000 / 1_000_000_000);
   });
 
-  it("fewer than 2 points => null; ZN tick value stays exact through the ledger", () => {
+  it("fewer than 2 scannable equity points => drawdown null; fresh paper ledger equity is the starting equity", () => {
     const ledger = new Ledger("paper");
     expect(ledger.maxDrawdown()).toBeNull();
     expect(ledger.equityMils).toBe(1_000_000_000);

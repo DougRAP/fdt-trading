@@ -4,7 +4,7 @@ import { INSTRUMENTS } from "../instruments/metadata";
 import { Ledger } from "../ledger/ledger";
 import { mils } from "../numerics/money";
 import { toTicks, type Ticks } from "../numerics/ticks";
-import { correctEvent, proposeTrailingStop, recordBrokerStop, recordEntryFill, recordExitFill, recordMark } from "./manual";
+import { correctEvent, proposeTrailingStop, recordBrokerStop, recordCompletedClose, recordEntryFill, recordExitFill, recordMark } from "./manual";
 import { LedgerError } from "./reduce";
 import { campaignFlags, isStale, positionSummary, stopDiscrepancy } from "./pnl";
 import type { ExitFillEvent } from "./types";
@@ -21,7 +21,7 @@ function entryInput(over: Partial<Parameters<typeof recordEntryFill>[0]> = {}) {
     root: "NQ" as const,
     side: 1 as const,
     snapshot: NQ,
-    planned: { entry: px("22000.25"), stop: px("21947.75"), contracts: 2 },
+    planned: { side: 1 as const, entry: px("22000.25"), stop: px("21947.75"), contracts: 2 },
     fill: { price: px("22000.25"), quantity: 2, filledAt: T(5, 14), timezone: "America/Chicago", feesMils: mils(5000) },
     equityMils: EQUITY,
     recordedAt: T(5, 15),
@@ -97,6 +97,43 @@ describe("manual journal: entry, partial exits, close (acceptance #7, #9)", () =
     expect(stats.meanR?.value).toBeCloseTo(260_000 / 2_120_000, 12);
     expect(stats.totalFeesMils).toBe(10_000);
     expect(campaignFlags(c, null, false)).toEqual(["EXIT RECORDED"]);
+  });
+
+  it("side deviation: filling short against a long plan needs a reason; the campaign takes the filled side", () => {
+    const shortFill = entryInput({ side: -1 as const });
+    expect(() => recordEntryFill(shortFill)).toThrow(LedgerError);
+    // reducer-level guard too: an ENTRY_FILL whose side differs without a reason is refused
+    const ledger = new Ledger("manual");
+    const events = recordEntryFill({ ...shortFill, deviationReason: "broker filled the opposite side" });
+    const noReason = events.map((e) => (e.type === "ENTRY_FILL" ? { ...e, deviationReason: undefined } : e));
+    const refused = ledger.appendAll(noReason);
+    expect(refused[1]?.applied).toBe(false);
+    expect(refused[1]?.reason).toMatch(/deviationReason is required/);
+    const fresh = new Ledger("manual");
+    expect(fresh.appendAll(events).every((r) => r.applied)).toBe(true);
+    const c = fresh.activeCampaign!;
+    expect(c.side).toBe(-1);
+    expect(c.deviationReasons).toHaveLength(1);
+    expect(fresh.stats().deviationCount).toBe(1);
+    expect(c.plan.plannedEntry).toBe(px("22000.25"));
+    expect(c.fills[0]?.side).toBe(-1);
+    // Stop for the filled side uses the decision snapshot's D for that side:
+    // D_short = ATR 25 x [1.5 + max(0, -1 x 0.60)] = 37.50 pts => 22000.25 + 37.50 = 22037.75 (rounded up to the tick).
+    expect(c.proposedStop?.stop).toBe(px("22037.75"));
+    expect(c.originalRiskMils).toBe((151 * 5000 + 5000) * 2);
+  });
+
+  it("two partial exits with identical fill times but different ids both apply", () => {
+    const ledger = new Ledger("manual");
+    ledger.appendAll(recordEntryFill(entryInput()));
+    const at = T(6, 10);
+    const a = ledger.append(recordExitFill({ id: "exit-a", campaignId: "manual:NQ:1", price: px("22025.75"), quantity: 1, filledAt: at, timezone: "UTC", feesMils: mils(2500), recordedAt: at }));
+    const b = ledger.append(recordExitFill({ id: "exit-b", campaignId: "manual:NQ:1", price: px("22030.75"), quantity: 1, filledAt: at, timezone: "UTC", feesMils: mils(2500), recordedAt: at }));
+    expect(a.applied && b.applied).toBe(true);
+    const c = ledger.campaigns[0]!;
+    expect(c.remaining).toBe(0);
+    expect(c.state).toBe("CLOSED");
+    expect(c.grossRealizedMils).toBe(102 * 5000 + 122 * 5000);
   });
 
   it("one open position per mode; a second entry is refused while one is active", () => {
@@ -180,6 +217,24 @@ describe("open state: marks, staleness, stop discrepancy, flags (acceptance #8)"
     ledger.append(recordMark({ id: "mk2", root: "NQ", price: px("22030"), observedAt: T(7), source: "manual-quote" }));
     expect(campaignFlags(ledger.activeCampaign!, ledger.state.marks.NQ!, false)).toEqual(["STOP BREACHED—VERIFY BROKER"]);
     expect(ledger.activeCampaign!.state).toBe("OPEN"); // a touched/breached stop does not close the trade
+  });
+
+  it("only a completed close advances the ratchet reference; a plain mark does not", () => {
+    const ledger = new Ledger("manual");
+    ledger.appendAll(recordEntryFill(entryInput()));
+    const recalc = (id: string) => {
+      const c = ledger.activeCampaign!;
+      const extreme = c.extremeClose ?? NQ.raw.closeT!;
+      const r = proposeTrailingStop({ id, campaignId: c.id, previous: c.proposedStop!, extremeClose: extreme, atrTicks: NQ.raw.atr20Ticks, H: NQ.H, calculatedAt: T(6), cfg: c.frozenConfig });
+      ledger.append(r.event);
+      return ledger.activeCampaign!.proposedStop!.stop;
+    };
+    ledger.append(recordMark({ id: "mk", root: "NQ", price: px("22300"), observedAt: T(6), source: "manual-entered" }));
+    expect(ledger.activeCampaign!.extremeClose).toBeNull();
+    expect(recalc("p1")).toBe(px("21947.75"));
+    ledger.append(recordCompletedClose({ id: "cc", root: "NQ", price: px("22300"), barEnd: T(6) }));
+    expect(ledger.activeCampaign!.extremeClose).toBe(px("22300"));
+    expect(recalc("p2")).toBe(px("22247.50")); // 22300 - 52.5
   });
 
   it("missing inputs freeze the proposed stop and flag DATA STALE without deleting it", () => {

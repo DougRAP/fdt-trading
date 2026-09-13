@@ -90,7 +90,7 @@ export class Ledger {
   }
 
   maxDrawdown(): Drawdown | null {
-    return maxDrawdown(this.state.equitySeries);
+    return maxDrawdown(this.state.equitySeries, this.startingEquityMils);
   }
 
   stats(): LedgerStats {
@@ -118,18 +118,30 @@ export interface Drawdown {
 /**
  * Max over the series of (peak - equity) / peak using marked equity (including open positions).
  * External cash flows shift the peak basis so deposits/withdrawals are not read as P&L.
- * Null with fewer than 2 points.
+ * Unavailable (null) when fewer than 2 scannable points exist, or when no account equity base exists
+ * at the first scanned point (startingEquity + cumulative external cash flow <= 0, e.g. a manual
+ * journal whose equity was never entered). Points with freshness "no-mark" are excluded from the
+ * scan because they carry unrealized 0 silently.
  */
-export function maxDrawdown(series: readonly AccountEquityPoint[]): Drawdown | null {
-  if (series.length < 2) return null;
-  let peak: number | null = null;
-  let best: Drawdown = { value: 0, peakMils: series[0]!.equityMils, troughMils: series[0]!.equityMils, at: series[0]!.timestamp, points: series.length };
+export function maxDrawdown(series: readonly AccountEquityPoint[], startingEquityMils: Mils): Drawdown | null {
+  let cumulativeFlow = 0;
+  const scanned: { point: AccountEquityPoint; base: number }[] = [];
   for (const p of series) {
+    cumulativeFlow += p.externalCashFlowMils;
+    if (p.freshness === "no-mark") continue;
+    scanned.push({ point: p, base: startingEquityMils + cumulativeFlow });
+  }
+  if (scanned.length < 2) return null;
+  if (scanned[0]!.base <= 0) return null;
+  let peak: number | null = null;
+  const first = scanned[0]!.point;
+  let best: Drawdown = { value: 0, peakMils: first.equityMils, troughMils: first.equityMils, at: first.timestamp, points: scanned.length };
+  for (const { point: p } of scanned) {
     if (peak === null) peak = p.equityMils;
     else peak = Math.max(peak + p.externalCashFlowMils, p.equityMils);
     if (peak <= 0) continue;
     const dd = (peak - p.equityMils) / peak;
-    if (dd > best.value) best = { value: dd, peakMils: mils(peak), troughMils: p.equityMils, at: p.timestamp, points: series.length };
+    if (dd > best.value) best = { value: dd, peakMils: mils(peak), troughMils: p.equityMils, at: p.timestamp, points: scanned.length };
   }
   return best;
 }

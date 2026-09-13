@@ -20,7 +20,7 @@ function manualWithEntry(): Ledger {
       root: "NQ",
       side: 1,
       snapshot: NQ,
-      planned: { entry: px("22000.25"), stop: px("21947.75"), contracts: 1 },
+      planned: { side: 1, entry: px("22000.25"), stop: px("21947.75"), contracts: 1 },
       fill: { price: px("22000.25"), quantity: 1, filledAt: "2026-01-05T14:31:00Z", timezone: "America/Chicago", feesMils: mils(2500) },
       equityMils: mils(250_000_000),
       recordedAt: "2026-01-05T14:35:00Z",
@@ -86,6 +86,26 @@ describe("ledger separation and persistence (acceptance #7)", () => {
     expect(!r.ok && r.reason).toMatch(/event bad: unknown campaign nope/);
   });
 
+  it("unknown event types and missing required fields are refused by name; nothing escapes loadLedger", () => {
+    const storage = new MemoryStorage();
+    const doc = (events: unknown[]) => JSON.stringify({ schemaVersion: 1, mode: "manual", startingEquityMils: 0, events });
+    storage.setItem(LEDGER_KEYS.manual, doc([{ id: "e1", type: "BOGUS_EVENT", timestamp: "2026-01-01T00:00:00Z", actual: true }]));
+    expect(loadLedger(storage, "manual")).toMatchObject({ ok: false, reason: "stored ledger refused: event e1 has unknown event type BOGUS_EVENT" });
+    storage.setItem(LEDGER_KEYS.manual, doc([{ id: "q1", type: "CAMPAIGN_QUEUED", timestamp: "2026-01-01T00:00:00Z", actual: true, campaignId: "c", mode: "manual", root: "NQ", contract: "NQ · SYNTHETIC", side: 1, frozenConfig: {}, frozenSnapshot: {}, decisionDistance: {} }]));
+    const missing = loadLedger(storage, "manual");
+    expect(missing.ok).toBe(false);
+    expect(!missing.ok && missing.reason).toBe("stored ledger refused: event q1 (CAMPAIGN_QUEUED) is missing required field plan");
+    // shape passes but the reducer throws a non-LedgerError (plan is not an object): still a refusal, never an exception
+    storage.setItem(LEDGER_KEYS.manual, doc([{ id: "q2", type: "CAMPAIGN_QUEUED", timestamp: "2026-01-01T00:00:00Z", actual: true, campaignId: "c", mode: "manual", root: "NQ", contract: "NQ · SYNTHETIC", side: 1, plan: null, frozenConfig: {}, frozenSnapshot: {}, decisionDistance: {} }]));
+    const thrown = loadLedger(storage, "manual");
+    expect(thrown.ok).toBe(false);
+    expect(!thrown.ok && thrown.reason).toMatch(/^stored ledger failed validation: /);
+    storage.setItem(LEDGER_KEYS.manual, doc([null, 5]));
+    expect(loadLedger(storage, "manual")).toMatchObject({ ok: false, reason: "stored ledger refused: event #0 is not an object" });
+    storage.setItem(LEDGER_KEYS.manual, doc([{ type: "MARK" }]));
+    expect(loadLedger(storage, "manual")).toMatchObject({ ok: false, reason: "stored ledger refused: event #0 has no string id" });
+  });
+
   it("reloading and re-appending the same events is idempotent", () => {
     const storage = new MemoryStorage();
     const manual = manualWithEntry();
@@ -123,20 +143,46 @@ describe("stats and drawdown (acceptance #9)", () => {
     expect("maxDrawdown" in byRoot.NQ).toBe(false);
   });
 
+  it("manual drawdown is unavailable until account equity is entered; no-mark points are not scanned", () => {
+    const ledger = new Ledger("manual"); // starting equity 0, no CASH_FLOW
+    ledger.appendAll(
+      recordEntryFill({
+        id: "m1",
+        campaignId: "manual:NQ:1",
+        root: "NQ",
+        side: 1,
+        snapshot: NQ,
+        planned: { side: 1, entry: px("22000.25"), stop: px("21947.75"), contracts: 1 },
+        fill: { price: px("22000.25"), quantity: 1, filledAt: "2026-01-05T14:31:00Z", timezone: "America/Chicago", feesMils: mils(2500) },
+        equityMils: mils(0),
+        recordedAt: "2026-01-05T14:35:00Z",
+      }),
+    );
+    ledger.append(recordMark({ id: "k1", root: "NQ", price: px("22100.25"), observedAt: "2026-01-06T21:00:00Z", source: "quote" }));
+    ledger.append(recordMark({ id: "k2", root: "NQ", price: px("22050.25"), observedAt: "2026-01-07T21:00:00Z", source: "quote" }));
+    expect(ledger.equitySeries).toHaveLength(3);
+    expect(ledger.equitySeries[0]?.freshness).toBe("no-mark");
+    expect(ledger.maxDrawdown()).toBeNull();
+    // seeding equity afterwards gives a base for later points
+    ledger.append(recordCashFlow({ id: "cf", amountMils: mils(250_000_000), note: "seed", at: "2026-01-08T00:00:00Z" }));
+    ledger.append(recordMark({ id: "k3", root: "NQ", price: px("22000.25"), observedAt: "2026-01-09T21:00:00Z", source: "quote" }));
+    expect(ledger.maxDrawdown()).toBeNull(); // first scanned point (k1) still had base 0
+  });
+
   it("external cash flows shift the peak basis instead of counting as P&L", () => {
     const ledger = manualWithEntry();
     ledger.append(recordMark({ id: "k1", root: "NQ", price: px("22100.25"), observedAt: "2026-01-06T21:00:00Z", source: "quote" })); // +400 ticks = +2,000,000
     ledger.append(recordMark({ id: "k2", root: "NQ", price: px("22050.25"), observedAt: "2026-01-07T21:00:00Z", source: "quote" })); // +200 ticks = +1,000,000
-    const before = maxDrawdown(ledger.equitySeries)!;
+    const before = maxDrawdown(ledger.equitySeries, ledger.startingEquityMils)!;
     expect(before.peakMils).toBe(250_000_000 - 2500 + 2_000_000);
     expect(before.troughMils).toBe(250_000_000 - 2500 + 1_000_000);
     expect(before.value).toBeCloseTo(1_000_000 / 251_997_500, 12);
     ledger.append(recordCashFlow({ id: "cf1", amountMils: mils(100_000_000), note: "deposit", at: "2026-01-08T00:00:00Z" }));
-    const after = maxDrawdown(ledger.equitySeries)!;
+    const after = maxDrawdown(ledger.equitySeries, ledger.startingEquityMils)!;
     expect(after.value).toBeCloseTo(before.value, 12);
     expect(ledger.equityMils).toBe(350_997_500);
     ledger.append(recordCashFlow({ id: "cf2", amountMils: mils(-100_000_000), note: "withdrawal", at: "2026-01-09T00:00:00Z" }));
-    expect(maxDrawdown(ledger.equitySeries)!.value).toBeCloseTo(before.value, 12);
+    expect(maxDrawdown(ledger.equitySeries, ledger.startingEquityMils)!.value).toBeCloseTo(before.value, 12);
     expect(ledger.state.externalCashFlowMils).toBe(0);
   });
 });

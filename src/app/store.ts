@@ -36,9 +36,15 @@ export function overridesOf(cfg: ModelConfig): ConfigOverrides {
   return { entryThreshold: cfg.entryThreshold, breadthThreshold: cfg.breadthThreshold, stopBase: cfg.stopBase, riskBudgetPct: cfg.riskBudgetPct, aSmallWarn: cfg.aSmallWarn.value };
 }
 
-export function applyOverrides(o: ConfigOverrides): ModelConfig {
+/**
+ * Build the live config from saved overrides. `version` carries the settings label
+ * ("0.1+user2": "0.1" is the model version, "+userN" the user's settings revision) so a campaign's
+ * frozen config records exactly which settings it was entered under.
+ */
+export function applyOverrides(o: ConfigOverrides, label: string = modelConfig.version): ModelConfig {
   return Object.freeze({
     ...modelConfig,
+    version: label,
     entryThreshold: o.entryThreshold,
     breadthThreshold: o.breadthThreshold,
     stopBase: o.stopBase,
@@ -60,7 +66,7 @@ export function loadConfig(storage: StorageLike): { cfg: ModelConfig; label: str
     if (!values.every((v) => typeof v === "number" && Number.isFinite(v))) {
       return { cfg: modelConfig, label: modelConfig.version, error: "stored model settings contain non-finite values; using defaults" };
     }
-    return { cfg: applyOverrides(o), label: doc.label, error: null };
+    return { cfg: applyOverrides(o, doc.label), label: doc.label, error: null };
   } catch {
     return { cfg: modelConfig, label: modelConfig.version, error: "stored model settings are not valid JSON; using defaults" };
   }
@@ -73,7 +79,7 @@ export function saveConfig(storage: StorageLike, overrides: ConfigOverrides, pre
   const label = `${modelConfig.version}+user${n}`;
   const doc: StoredConfig = { schemaVersion: 1, label, overrides };
   storage.setItem(CONFIG_KEY, JSON.stringify(doc));
-  return { cfg: applyOverrides(overrides), label };
+  return { cfg: applyOverrides(overrides, label), label };
 }
 
 export function browserStorage(): StorageLike {
@@ -117,7 +123,7 @@ export interface AppActions {
   setMode(mode: Mode): void;
   select(root: InstrumentRoot): void;
   openDrawer(id: DrawerId): void;
-  /** Append events to a ledger, persist, and return the first refusal reason if any. */
+  /** Append events to a ledger, persist, and return the first refusal reason if any. A duplicate id on a user write is an error. */
   append(mode: Mode, events: LedgerEvent[]): string | null;
   saveSettings(overrides: ConfigOverrides): void;
   paperStart(): DecisionOutcome;
@@ -205,7 +211,7 @@ export function useAppStore(storage: StorageLike): AppStore {
         let firstError: string | null = null;
         for (const e of events) {
           const r = ledger.append(e);
-          if (!r.applied && r.reason !== "duplicate" && !firstError) firstError = r.reason;
+          if (!r.applied && !firstError) firstError = r.reason === "duplicate" ? `event id ${e.id} already exists in the ${mode} ledger; nothing was recorded` : r.reason;
         }
         persist(mode);
         bump();

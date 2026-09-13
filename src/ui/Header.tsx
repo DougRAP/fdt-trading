@@ -33,7 +33,7 @@ export function Header() {
             </select>
           </label>
           <span title="Synthetic fixture snapshot; freshness not applicable">Data {snap ? fmtTime(snap.barEnd) : "—"} · synthetic</span>
-          <span title="Model v0.1 is an unvalidated research hypothesis">v{state.cfg.version}{state.configLabel !== state.cfg.version ? `+${state.configLabel.split("+")[1]}` : ""} unvalidated</span>
+          <span title="Model v0.1 is an unvalidated research hypothesis; +userN marks a saved settings revision">v{state.cfg.version} unvalidated</span>
           <span>{state.storageKind}</span>
         </div>
         <div className="cp-actions">

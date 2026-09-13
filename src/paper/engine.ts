@@ -10,8 +10,8 @@ import { freezeModelConfig, modelConfig, type InstrumentRoot, type ModelConfig }
 import type { SignalSnapshot } from "../formula/types";
 import { INSTRUMENTS } from "../instruments/metadata";
 import { floorDivMils, formatMils, mulMilsInt, type Mils } from "../numerics/money";
-import type { Ticks } from "../numerics/ticks";
-import { topQualified } from "../ranking/rank";
+import { ticks, type Ticks } from "../numerics/ticks";
+import { rankSnapshots } from "../ranking/rank";
 import { modeledEntryFill, modeledStopExitFill, perContractRisk, positionSize } from "../sizing/sizing";
 import { closeRequired, initialStop, stopAppliesToBar, stopDistance, trailStop, type OhlcBar } from "../stops/stops";
 import type { Campaign, LedgerEvent } from "../campaign/types";
@@ -29,12 +29,18 @@ export interface TrailInputs {
   H: number | null;
 }
 
+export interface SkippedCandidate {
+  root: InstrumentRoot;
+  reason: string;
+}
+
 export type DecisionOutcome =
-  | { kind: "queued"; campaignId: string; root: InstrumentRoot; contracts: number }
+  | { kind: "queued"; campaignId: string; root: InstrumentRoot; contracts: number; skipped: SkippedCandidate[] }
   | { kind: "paused" }
   | { kind: "position-active"; campaignId: string }
   | { kind: "no-qualifying" }
-  | { kind: "skip"; root: InstrumentRoot; reason: string };
+  /** Every qualifying candidate was skipped; root/reason are the last one, skipped lists all. */
+  | { kind: "skip"; root: InstrumentRoot; reason: string; skipped: SkippedCandidate[] };
 
 export interface ObservationOutcome {
   campaignId: string | null;
@@ -51,49 +57,74 @@ function campaignFor(ledger: Ledger, root: InstrumentRoot): Campaign | null {
 }
 
 /**
- * At a completed decision bar while flat: queue the highest qualifying and sizeable candidate.
- * Returns the events appended and the outcome. Never fills; fills happen on the next executable bar.
+ * At a completed decision bar while flat: walk the qualifying candidates in rank order and queue
+ * the first one that is sizeable under the risk budget; every skipped candidate is reported with its
+ * reason. Never fills; fills happen on the next executable bar.
  */
 export function onDecisionBar(ledger: Ledger, snapshots: readonly SignalSnapshot[], equityMils: Mils, cfg: ModelConfig = modelConfig): DecisionOutcome {
   const state = ledger.state;
   if (state.paused) return { kind: "paused" };
   if (state.activeCampaignId) return { kind: "position-active", campaignId: state.activeCampaignId };
-  const top = topQualified(snapshots);
-  if (!top || top.qualifiedSide === null) return { kind: "no-qualifying" };
-  const side = top.qualifiedSide;
-  const root = top.root;
-  const inst = INSTRUMENTS[root];
-  const cost = cfg.costs[root];
-  if (top.raw.closeT === null) return { kind: "skip", root, reason: "decision snapshot has no close price" };
-  const dist = stopDistance(top.raw.atr20Ticks, top.H, side, cfg);
-  if (!dist.ok) return { kind: "skip", root, reason: dist.reason.detail };
+  const qualified = rankSnapshots(snapshots).filter((e) => e.group === "qualified").map((e) => e.snapshot);
+  if (qualified.length === 0) return { kind: "no-qualifying" };
 
-  const plannedEntry = modeledEntryFill(top.raw.closeT, side, cost);
-  const plannedStop = initialStop({ side, entryFill: plannedEntry, distance: dist.value, calculatedAt: top.availableAt }).stop;
-  const plannedExit = modeledStopExitFill(plannedStop, side, cost).fill;
-  const risk = perContractRisk({ entryFill: plannedEntry, stopExitFill: plannedExit, tickValueMils: inst.tickValueMils, cost });
-  const sizing = positionSize({ equityMils, perContractRiskMils: risk.totalMils, cfg });
-  if (sizing.skip) return { kind: "skip", root, reason: sizing.skipReason ?? "size is zero" };
-
-  const campaignId = `paper:${root}:${top.barEnd}`;
-  if (state.campaigns[campaignId]) return { kind: "skip", root, reason: `decision bar ${top.barEnd} already used for ${root}` };
-  const r = ledger.append({
-    id: `${campaignId}:queued`,
-    type: "CAMPAIGN_QUEUED",
-    timestamp: top.availableAt,
-    actual: false,
-    campaignId,
-    mode: "paper",
-    root,
-    contract: inst.contract,
-    side,
-    plan: { contracts: sizing.contracts, plannedEntry, plannedStop, riskBudgetMils: sizing.budgetMils, perContractRisk: risk, sizing },
-    frozenConfig: freezeModelConfig(cfg),
-    frozenSnapshot: structuredClone(top),
-    decisionDistance: dist.value,
-  });
-  if (!r.applied && r.reason !== "duplicate") return { kind: "skip", root, reason: r.reason ?? "ledger refused" };
-  return { kind: "queued", campaignId, root, contracts: sizing.contracts };
+  const skipped: SkippedCandidate[] = [];
+  for (const top of qualified) {
+    const root = top.root;
+    const skip = (reason: string) => skipped.push({ root, reason });
+    if (top.qualifiedSide === null) {
+      skip("no qualified side");
+      continue;
+    }
+    const side = top.qualifiedSide;
+    const inst = INSTRUMENTS[root];
+    const cost = cfg.costs[root];
+    if (top.raw.closeT === null) {
+      skip("decision snapshot has no close price");
+      continue;
+    }
+    const dist = stopDistance(top.raw.atr20Ticks, top.H, side, cfg);
+    if (!dist.ok) {
+      skip(dist.reason.detail);
+      continue;
+    }
+    const plannedEntry = modeledEntryFill(top.raw.closeT, side, cost);
+    const plannedStop = initialStop({ side, entryFill: plannedEntry, distance: dist.value, calculatedAt: top.availableAt }).stop;
+    const plannedExit = modeledStopExitFill(plannedStop, side, cost).fill;
+    const risk = perContractRisk({ entryFill: plannedEntry, stopExitFill: plannedExit, tickValueMils: inst.tickValueMils, cost });
+    const sizing = positionSize({ equityMils, perContractRiskMils: risk.totalMils, cfg });
+    if (sizing.skip) {
+      skip(sizing.skipReason ?? "size is zero");
+      continue;
+    }
+    const campaignId = `paper:${root}:${top.barEnd}`;
+    if (state.campaigns[campaignId]) {
+      skip(`decision bar ${top.barEnd} already used for ${root}`);
+      continue;
+    }
+    const r = ledger.append({
+      id: `${campaignId}:queued`,
+      type: "CAMPAIGN_QUEUED",
+      timestamp: top.availableAt,
+      actual: false,
+      campaignId,
+      mode: "paper",
+      root,
+      contract: inst.contract,
+      side,
+      plan: { contracts: sizing.contracts, plannedEntry, plannedStop, riskBudgetMils: sizing.budgetMils, perContractRisk: risk, sizing },
+      frozenConfig: freezeModelConfig(cfg),
+      frozenSnapshot: structuredClone(top),
+      decisionDistance: dist.value,
+    });
+    if (!r.applied && r.reason !== "duplicate") {
+      skip(r.reason ?? "ledger refused");
+      continue;
+    }
+    return { kind: "queued", campaignId, root, contracts: sizing.contracts, skipped };
+  }
+  const last = skipped[skipped.length - 1]!;
+  return { kind: "skip", root: last.root, reason: last.reason, skipped };
 }
 
 /**
@@ -131,6 +162,7 @@ export function onExecutableBar(ledger: Ledger, bar: EngineBar, trail: TrailInpu
       timestamp: bar.barEnd,
       actual: false,
       campaignId: c.id,
+      side: c.side,
       quantity: contracts,
       price: fill,
       feesMils: mulMilsInt(cost.feePerContractPerSideMils, contracts),
@@ -157,8 +189,9 @@ export function onExecutableBar(ledger: Ledger, bar: EngineBar, trail: TrailInpu
 /**
  * Observation bar for an open paper position: close-required exit first, then resting-stop test
  * (only if the stop was effective before this bar), then trailing from this bar's close, then mark.
+ * A running campaign is governed by its frozen config; the `cfg` argument is not used for it.
  */
-export function onObservationBar(ledger: Ledger, bar: EngineBar, trail: TrailInputs | null, cfg: ModelConfig = modelConfig): ObservationOutcome {
+export function onObservationBar(ledger: Ledger, bar: EngineBar, trail: TrailInputs | null, _cfg: ModelConfig = modelConfig): ObservationOutcome {
   const c = campaignFor(ledger, bar.root);
   const events: LedgerEvent[] = [];
   const push = (e: LedgerEvent) => {
@@ -197,11 +230,13 @@ export function onObservationBar(ledger: Ledger, bar: EngineBar, trail: TrailInp
   if (!out.exited && c.restingStop) {
     const prevExtreme = c.extremeClose;
     const extreme: Ticks =
-      prevExtreme === null ? bar.close : c.side === 1 ? (Math.max(prevExtreme, bar.close) as Ticks) : (Math.min(prevExtreme, bar.close) as Ticks);
-    const t = trailStop({ previous: c.restingStop, extremeClose: extreme, atrTicks: trail?.atrTicks ?? null, H: trail?.H ?? null, calculatedAt: bar.availableAt, cfg });
+      prevExtreme === null ? bar.close : c.side === 1 ? ticks(Math.max(prevExtreme, bar.close)) : ticks(Math.min(prevExtreme, bar.close));
+    const t = trailStop({ previous: c.restingStop, extremeClose: extreme, atrTicks: trail?.atrTicks ?? null, H: trail?.H ?? null, calculatedAt: bar.availableAt, cfg: c.frozenConfig });
     out.stopChanged = t.changed;
     out.stopFrozen = t.state.source === "frozen";
-    if (t.changed || out.stopFrozen) {
+    // A stop that was frozen and now has valid inputs is re-issued even if unchanged, so DATA STALE clears.
+    const recovered = c.restingStop.source === "frozen" && !out.stopFrozen;
+    if (t.changed || out.stopFrozen || recovered) {
       push({ id: `${c.id}:stop:${bar.barEnd}`, type: "STOP_SET", timestamp: bar.availableAt, actual: false, campaignId: c.id, kind: "resting", stop: t.state });
     }
     const cr = closeRequired(t.state, { bid: bar.close, ask: bar.close, observedAt: bar.barEnd });
@@ -211,7 +246,7 @@ export function onObservationBar(ledger: Ledger, bar: EngineBar, trail: TrailInp
     }
   }
 
-  push({ id: `${c.id}:mark:${bar.barEnd}`, type: "MARK", timestamp: bar.barEnd, actual: false, root: bar.root, price: bar.close, observedAt: bar.barEnd, source: "paper-observation-bar" });
+  push({ id: `${c.id}:mark:${bar.barEnd}`, type: "MARK", timestamp: bar.barEnd, actual: false, root: bar.root, price: bar.close, observedAt: bar.barEnd, source: "paper-observation-bar", completedClose: true });
   push({ id: `${c.id}:monitor:${bar.barEnd}`, type: "STOP_MONITOR", timestamp: bar.barEnd, actual: false, healthy: true, checkedAt: bar.barEnd, detail: `resting stop checked against bar ending ${bar.barEnd}` });
   return out;
 }

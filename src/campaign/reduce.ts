@@ -142,13 +142,18 @@ function applyEntryFill(state: LedgerState, e: EntryFillEvent): void {
   if (!Number.isInteger(e.quantity) || e.quantity <= 0) throw new LedgerError("entry quantity must be a positive integer");
   if (!Number.isSafeInteger(e.price) || e.price <= 0) throw new LedgerError("entry price must be a positive tick count");
   if (!Number.isSafeInteger(e.feesMils) || e.feesMils < 0) throw new LedgerError("entry fees must be zero or more");
-  const deviates = e.price !== c.plan.plannedEntry || e.quantity !== c.plan.contracts;
+  if (e.side !== 1 && e.side !== -1) throw new LedgerError("entry fill side must be 1 or -1");
+  const sideDeviates = e.side !== c.side;
+  if (sideDeviates && c.state === "OPEN") throw new LedgerError(`entry fill side does not match the open ${c.side === 1 ? "long" : "short"} campaign ${c.id}`);
+  const deviates = e.price !== c.plan.plannedEntry || e.quantity !== c.plan.contracts || sideDeviates;
   if (deviates && e.fillModel === "actual-broker" && !e.deviationReason) {
-    throw new LedgerError("deviationReason is required when an actual fill differs from the plan");
+    throw new LedgerError("deviationReason is required when an actual fill differs from the plan (price, contracts or side)");
   }
+  if (sideDeviates) c.side = e.side;
   c.fills.push({
     eventId: e.id,
     kind: "entry",
+    side: e.side,
     quantity: e.quantity,
     price: e.price,
     feesMils: e.feesMils,
@@ -262,12 +267,15 @@ export function applyEvent(state: LedgerState, e: LedgerEvent): void {
       for (const c of openCampaigns(state)) {
         if (c.root === e.root) {
           c.exposureBars += 1;
-          c.extremeClose =
-            c.extremeClose === null
-              ? e.price
-              : c.side === 1
-                ? ticks(Math.max(c.extremeClose, e.price))
-                : ticks(Math.min(c.extremeClose, e.price));
+          // Only completed closes move the ratchet reference (brief: highest/lowest completed close).
+          if (e.completedClose) {
+            c.extremeClose =
+              c.extremeClose === null
+                ? e.price
+                : c.side === 1
+                  ? ticks(Math.max(c.extremeClose, e.price))
+                  : ticks(Math.min(c.extremeClose, e.price));
+          }
         }
       }
       pushEquityPoint(state, e.observedAt, mils(0));
@@ -304,6 +312,10 @@ export function applyEvent(state: LedgerState, e: LedgerEvent): void {
     case "STOP_MONITOR":
       state.stopMonitor = { healthy: e.healthy, lastCheckedAt: e.checkedAt, detail: e.detail };
       break;
+    default: {
+      const unknown = e as { type?: unknown };
+      throw new LedgerError(`unknown event type ${String(unknown.type)}`);
+    }
   }
 }
 

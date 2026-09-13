@@ -39,7 +39,8 @@ export type InstrumentRoot = "NQ" | "ES" | "RTY" | "YM" | "ZN" | "GC";
 export const INSTRUMENT_ROOTS: readonly InstrumentRoot[] = ["NQ", "ES", "RTY", "YM", "ZN", "GC"];
 
 export interface ModelConfig {
-  version: "0.1";
+  /** "0.1" is the model version. A user settings revision is appended as "+userN" (e.g. "0.1+user2"); the formula does not change. */
+  version: string;
   /** Q baseline: mean of the preceding N volumes (excludes bar t). */
   volumeWindow: 20;
   /** Sigma estimation: sample SD of the preceding N changes (excludes current change), ddof=1. */

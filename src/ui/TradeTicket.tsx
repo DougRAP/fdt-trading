@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { candidateSide, draftPlan } from "../app/plan";
 import { ledgerOf, selectedSnapshot, useApp } from "../app/store";
-import { proposeTrailingStop, recordBrokerStop, recordEntryFill, recordExitFill, recordMark } from "../campaign/manual";
+import { newEventId } from "../app/ids";
+import { proposeTrailingStop, recordBrokerStop, recordCompletedClose, recordEntryFill, recordExitFill, recordMark } from "../campaign/manual";
 import { positionSummary, type PositionSummary } from "../campaign/pnl";
 import { LedgerError } from "../campaign/reduce";
 import type { BrokerStopStatus, Campaign } from "../campaign/types";
@@ -158,7 +159,8 @@ function ManualEntryForm({ snapshot, side, equityMils }: { snapshot: SignalSnaps
   const canRecord = plan.ok;
   const priceDiffers = price.trim() !== "" && Number(price) !== Number(plannedPriceText);
   const qtyDiffers = qty.trim() !== "" && plan.ok && Number(qty) !== plan.contracts;
-  const deviates = priceDiffers || qtyDiffers;
+  const sideDiffers = plan.ok && chosenSide !== plan.side;
+  const deviates = priceDiffers || qtyDiffers || sideDiffers;
 
   /** Human, field-level validation. Returns parsed values or the map of messages. */
   function validate(): { ok: true; fillPrice: Ticks; quantity: number; filledAt: string; feesMils: Mils; brokerPriceTicks: Ticks | null } | { ok: false; errors: typeof fieldErrors } {
@@ -202,7 +204,7 @@ function ManualEntryForm({ snapshot, side, equityMils }: { snapshot: SignalSnaps
 
   function humanize(message: string): string {
     if (/still active; one position per mode/.test(message)) return "A manual position is already open. Record its exit before entering another.";
-    if (/deviationReason is required/.test(message)) return "Deviation reason is required: fill differs from plan";
+    if (/deviationReason is required/.test(message)) return "Deviation reason is required: fill differs from plan (price, contracts or side)";
     if (/cannot record entry/.test(message)) return `Cannot record entry: ${message.replace(/^cannot record entry: /, "")}`;
     return message;
   }
@@ -218,7 +220,7 @@ function ManualEntryForm({ snapshot, side, equityMils }: { snapshot: SignalSnaps
     setFieldErrors({});
     try {
       const plannedContracts = plan.sizing ? plan.sizing.contracts : plan.contracts;
-      const id = `manual:${snapshot.root}:${v.filledAt}`;
+      const id = newEventId(`manual:${snapshot.root}`);
       const brokerStop =
         brokerStatus === "none"
           ? undefined
@@ -229,7 +231,7 @@ function ManualEntryForm({ snapshot, side, equityMils }: { snapshot: SignalSnaps
         root: snapshot.root,
         side: chosenSide,
         snapshot,
-        planned: { entry: plan.plannedEntry, stop: plan.plannedStop, contracts: plannedContracts },
+        planned: { side: plan.side, entry: plan.plannedEntry, stop: plan.plannedStop, contracts: plannedContracts },
         fill: { price: v.fillPrice, quantity: v.quantity, filledAt: v.filledAt, timezone: tz, feesMils: v.feesMils },
         deviationReason: deviation.trim() || undefined,
         brokerStop,
@@ -277,7 +279,7 @@ function ManualEntryForm({ snapshot, side, equityMils }: { snapshot: SignalSnaps
           {fieldError("brokerPrice")}
         </div>
         {deviates && (
-          <label style={{ gridColumn: "1 / -1" }}>Deviation reason (required: {priceDiffers ? "price" : ""}{priceDiffers && qtyDiffers ? " and " : ""}{qtyDiffers ? "contracts" : ""} differ from plan)<input value={deviation} onChange={(ev) => setDeviation(ev.target.value)} aria-invalid={!!fieldErrors.deviation} />{fieldError("deviation")}</label>
+          <label style={{ gridColumn: "1 / -1" }}>Deviation reason (required: {[priceDiffers ? "price" : "", qtyDiffers ? "contracts" : "", sideDiffers ? "side" : ""].filter(Boolean).join(", ")} differ from plan)<input value={deviation} onChange={(ev) => setDeviation(ev.target.value)} aria-invalid={!!fieldErrors.deviation} />{fieldError("deviation")}</label>
         )}
       </div>
       {error && <p className="cp-error" role="alert">{error}</p>}
@@ -299,6 +301,8 @@ function ManualOpenActions({ c, snapshot }: { c: Campaign; snapshot: SignalSnaps
   const [exitDeviation, setExitDeviation] = useState("");
   const [markPrice, setMarkPrice] = useState("");
   const [markTime, setMarkTime] = useState(localNow);
+  const [closePrice, setClosePrice] = useState("");
+  const [closeTime, setCloseTime] = useState(localNow);
   const [brokerPrice, setBrokerPrice] = useState("");
   const [brokerStatus, setBrokerStatus] = useState<BrokerStopStatus>("working");
   const [error, setError] = useState<string | null>(null);
@@ -329,7 +333,7 @@ function ManualOpenActions({ c, snapshot }: { c: Campaign; snapshot: SignalSnaps
               guard(() => {
                 const filledAt = toIso(exitTime);
                 return actions.append("manual", [
-                  recordExitFill({ id: `${c.id}:exit:${filledAt}`, campaignId: c.id, price: toTicks(exitPrice.trim(), inst.tick, "exact"), quantity: Number(exitQty), filledAt, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, feesMils: dollarsToMils(exitFees.trim() || "0"), deviationReason: exitDeviation.trim() || undefined, recordedAt: new Date().toISOString() }),
+                  recordExitFill({ id: newEventId(`${c.id}:exit`), campaignId: c.id, price: toTicks(exitPrice.trim(), inst.tick, "exact"), quantity: Number(exitQty), filledAt, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, feesMils: dollarsToMils(exitFees.trim() || "0"), deviationReason: exitDeviation.trim() || undefined, recordedAt: new Date().toISOString() }),
                 ]);
               })
             }
@@ -348,11 +352,31 @@ function ManualOpenActions({ c, snapshot }: { c: Campaign; snapshot: SignalSnaps
             onClick={() =>
               guard(() => {
                 const observedAt = toIso(markTime);
-                return actions.append("manual", [recordMark({ id: `${c.id}:mark:${observedAt}`, root: c.root, price: toTicks(markPrice.trim(), inst.tick, "exact"), observedAt, source: "manual-entered" })]);
+                return actions.append("manual", [recordMark({ id: newEventId(`${c.id}:mark`), root: c.root, price: toTicks(markPrice.trim(), inst.tick, "exact"), observedAt, source: "manual-entered" })]);
               })
             }
+            title="A mark updates P&L and equity only; it never moves the trailing-stop reference."
           >
             Record mark
+          </button>
+        </div>
+        <label>Completed close<input inputMode="decimal" value={closePrice} onChange={(ev) => setClosePrice(ev.target.value)} /></label>
+        <label>Bar end<input type="datetime-local" value={closeTime} onChange={(ev) => setCloseTime(ev.target.value)} /></label>
+        <div className="cp-field">
+          <span>&nbsp;</span>
+          <button
+            type="button"
+            onClick={() =>
+              guard(() => {
+                const barEnd = toIso(closeTime);
+                const err = actions.append("manual", [recordCompletedClose({ id: newEventId(`${c.id}:close`), root: c.root, price: toTicks(closePrice.trim(), inst.tick, "exact"), barEnd })]);
+                if (!err) actions.setNotice("Completed close recorded. Recalculate the proposed stop to apply it; only completed closes move the ratchet reference.");
+                return err;
+              })
+            }
+            title="Only a completed bar close advances the highest/lowest close used by the trailing stop."
+          >
+            Record completed close
           </button>
         </div>
         <div className="cp-field">
@@ -365,7 +389,8 @@ function ManualOpenActions({ c, snapshot }: { c: Campaign; snapshot: SignalSnaps
                 if (!previous || !snapshot) return "no proposed stop or snapshot to recalculate from";
                 const extreme = c.extremeClose ?? snapshot.raw.closeT;
                 if (extreme === null) return "no completed close available";
-                const r = proposeTrailingStop({ id: `${c.id}:propose:${new Date().toISOString()}`, campaignId: c.id, previous, extremeClose: extreme, atrTicks: snapshot.raw.atr20Ticks, H: snapshot.H, calculatedAt: new Date().toISOString(), cfg: state.cfg });
+                // A running campaign is governed by the config frozen at entry, never the live settings.
+                const r = proposeTrailingStop({ id: newEventId(`${c.id}:propose`), campaignId: c.id, previous, extremeClose: extreme, atrTicks: snapshot.raw.atr20Ticks, H: snapshot.H, calculatedAt: new Date().toISOString(), cfg: c.frozenConfig });
                 const err = actions.append("manual", [r.event]);
                 if (!err) actions.setNotice(r.changed ? "Proposed stop tightened. Your broker stop is unchanged until you record it." : "Proposed stop unchanged (ratchet never loosens).");
                 return err;
@@ -394,7 +419,7 @@ function ManualOpenActions({ c, snapshot }: { c: Campaign; snapshot: SignalSnaps
             onClick={() =>
               guard(() => {
                 const at = new Date().toISOString();
-                return actions.append("manual", [recordBrokerStop({ id: `${c.id}:broker:${at}`, campaignId: c.id, price: brokerPrice.trim() ? toTicks(brokerPrice.trim(), inst.tick, "exact") : null, status: brokerStatus, confirmedAt: at, recordedAt: at })]);
+                return actions.append("manual", [recordBrokerStop({ id: newEventId(`${c.id}:broker`), campaignId: c.id, price: brokerPrice.trim() ? toTicks(brokerPrice.trim(), inst.tick, "exact") : null, status: brokerStatus, confirmedAt: at, recordedAt: at })]);
               })
             }
           >

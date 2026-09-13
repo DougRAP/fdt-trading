@@ -25,7 +25,7 @@ export function CampaignResults() {
         </div>
         <div>
           <span className="cp-small">Max account drawdown (marked)</span>
-          <span className="cp-value">{dd ? fmtPct(dd.value, 2) : EM_DASH}</span>
+          <span className="cp-value" title={dd ? undefined : state.mode === "manual" && !ledger.events.some((e) => e.type === "CASH_FLOW") ? "account equity not entered" : "needs at least two marked equity points"}>{dd ? fmtPct(dd.value, 2) : EM_DASH}</span>
         </div>
         <div>
           <span className="cp-small">Marked equity</span>
