@@ -5,6 +5,12 @@
 [build.environment]
   NODE_VERSION = "22"
 
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+  # the cached system prefix is read from the repository at runtime
+  included_files = ["src/content/how-it-works.md"]
+
 [[redirects]]
   from = "/*"
   to = "/index.html"

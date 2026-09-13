@@ -65,7 +65,8 @@ export function responseSchemaFor(roots: readonly InstrumentRoot[]): JsonSchema 
     properties: {
       kind: { type: "string", enum: [...INVALIDATION_KINDS] },
       root: rootEnum,
-      threshold: { type: ["number", "null"] },
+      // anyOf rather than a type array: structured outputs accept anyOf, enum, required and additionalProperties.
+      threshold: { anyOf: [{ type: "number" }, { type: "null" }] },
       note: stringSchema(LIMITS.maxEvidenceChars),
     },
   };
@@ -110,7 +111,7 @@ export function responseSchemaFor(roots: readonly InstrumentRoot[]): JsonSchema 
         properties: {
           action: { type: "string", enum: [...PROPOSAL_ACTIONS] },
           root: { anyOf: [rootEnum, { type: "null" }] },
-          side: { type: ["integer", "null"], enum: [1, -1, null] },
+          side: { anyOf: [{ type: "integer", enum: [1, -1] }, { type: "null" }] },
           entryZone: {
             anyOf: [
               {
