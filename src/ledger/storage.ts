@@ -84,7 +84,8 @@ export function loadLedger(storage: StorageLike, mode: Mode, options: LedgerOpti
     if (problem) return { ok: false, reason: `stored ledger refused: ${problem}`, raw };
   }
   try {
-    const ledger = Ledger.fromEvents(mode, doc.events, { ...options, startingEquityMils: mils(doc.startingEquityMils as number) });
+    const events = doc.events.map(normalizeStoredEvent);
+    const ledger = Ledger.fromEvents(mode, events, { ...options, startingEquityMils: mils(doc.startingEquityMils as number) });
     return { ok: true, ledger, source: "stored" };
   } catch (err) {
     const message = err instanceof LedgerError ? err.message : err instanceof Error ? `${err.name}: ${err.message}` : String(err);
@@ -114,7 +115,8 @@ const REQUIRED_FIELDS: Record<string, string[]> = {
   EXIT_FILL: ["campaignId", "quantity", "price", "feesMils", "filledAt", "fillModel", "reason"],
   STOP_SET: ["campaignId", "kind", "stop"],
   BROKER_STOP_RECORDED: ["campaignId", "status", "confirmedAt"],
-  MARK: ["root", "price", "observedAt", "source", "completedClose"],
+  // completedClose is tolerated when absent (see normalizeStoredEvent): an older MARK is read as a plain mark.
+  MARK: ["root", "price", "observedAt", "source"],
   CASH_FLOW: ["amountMils", "note"],
   PAPER_PAUSED: [],
   PAPER_RESUMED: [],
@@ -122,6 +124,19 @@ const REQUIRED_FIELDS: Record<string, string[]> = {
   CLOSE_REQUESTED: ["campaignId", "reason"],
   STOP_MONITOR: ["healthy", "checkedAt", "detail"],
 };
+
+/**
+ * Tolerant read, not a migration: a stored MARK without `completedClose` (written before the field
+ * existed) is normalized to completedClose:false. A mark of unknown kind is conservative — it updates
+ * P&L and equity but never advances the trailing-stop reference. The stored document is not rewritten
+ * until the next save; the schema version is unchanged.
+ */
+export function normalizeStoredEvent(e: LedgerEvent): LedgerEvent {
+  if (e.type === "MARK" && (e as { completedClose?: unknown }).completedClose === undefined) {
+    return { ...e, completedClose: false };
+  }
+  return e;
+}
 
 /** Structural check of one stored event; returns a reason naming the event, or null. */
 export function validateEventShape(e: unknown, index: number): string | null {

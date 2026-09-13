@@ -106,6 +106,24 @@ describe("ledger separation and persistence (acceptance #7)", () => {
     expect(loadLedger(storage, "manual")).toMatchObject({ ok: false, reason: "stored ledger refused: event #0 has no string id" });
   });
 
+  it("a stored MARK without completedClose loads as a plain mark and does not move the ratchet reference", () => {
+    const storage = new MemoryStorage();
+    const manual = manualWithEntry();
+    saveLedger(storage, manual);
+    const stored = JSON.parse(storage.getItem(LEDGER_KEYS.manual)!) as { events: Record<string, unknown>[] };
+    stored.events.push({ id: "old-mark", type: "MARK", timestamp: "2026-01-06T21:00:00Z", actual: true, root: "NQ", price: px("22300"), observedAt: "2026-01-06T21:00:00Z", source: "pre-field-mark" });
+    storage.setItem(LEDGER_KEYS.manual, JSON.stringify(stored));
+    const r = loadLedger(storage, "manual");
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error(r.reason);
+    const mark = r.ledger.events.find((e) => e.id === "old-mark");
+    expect(mark?.type === "MARK" && mark.completedClose).toBe(false);
+    expect(r.ledger.state.marks.NQ?.price).toBe(px("22300"));
+    expect(r.ledger.activeCampaign?.extremeClose).toBeNull();
+    // the stored document itself is untouched by the read
+    expect(storage.getItem(LEDGER_KEYS.manual)).toBe(JSON.stringify(stored));
+  });
+
   it("reloading and re-appending the same events is idempotent", () => {
     const storage = new MemoryStorage();
     const manual = manualWithEntry();
