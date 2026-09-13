@@ -87,3 +87,21 @@ Rules:
 4. **Manual UX:** the model reading is shown before market selection, as a panel above the ticket. Selecting a market drafts the ticket from the model's proposal when one exists for that market, else from the calculator plan.
 
 Consequences for the risk engine: clamps in the "Risk engine clamps" section still apply in full. Discretion widens which markets may be proposed; it does not loosen stop bounds, sizing, one-position rule, or data-validity gates. Rules-only paper ledger is still kept as the control for evaluation.
+
+## Feedback loop (user, 2026-09-13: "constantly learning, top tier AI")
+
+The model does not retrain. "Learning" is implemented as a bounded, auditable feedback loop from the ledger into every request.
+
+- **Outcome feedback.** Every request carries the model's last K proposals (default K = 20) with their outcomes from the ledger: executed or clamped or rejected, fill, exit reason, realized R, bars held, and whether the invalidation evidence it named appeared before the stop was hit. Computed by code, never self-reported.
+- **Lessons record.** After each closed campaign (and on demand) the model writes a structured note: `{ campaignId, whatHeld: [], whatFailed: [], weighDifferently: [], evidenceToWatch: [] }`. Stored as ledger event `INTERPRETER_LESSON` (idempotent id from campaign id + model id + prompt version). The last N lessons (default N = 30) are included in the next request. Older lessons are compacted by the model into a single `INTERPRETER_DIGEST` event when N is exceeded; the digest is versioned and the originals stay in the log.
+- **Hard boundary.** Lessons and digests change only what the model reads. They cannot modify thresholds, sizing, stop bounds, candidate rules, or config. The risk engine clamps every proposal exactly as before. The rules-only paper ledger remains the control.
+- **Audit.** Lessons and digests are shown in the Journal drawer and in a "Model memory" panel, with the prompt version and model id that produced them. A "Reset model memory" action archives (never deletes) the current lessons and starts a new memory epoch, recorded as an event.
+- **Evaluation.** Model-assisted results are compared with and without the feedback loop (memory epoch on/off) on identical sequences, so the loop's contribution is measured, not assumed.
+
+## Model defaults (user, 2026-09-13)
+
+- Decision interpreter and observation monitor: `claude-fable-5-1` (Anthropic's most capable generally available model), thinking always on, `output_config.effort` "high" for observations and "xhigh" for decision bars; server-side refusal fallbacks enabled (`fallbacks: "default"`); structured outputs for the JSON contract (no forced tool choice, no prefill on this model family).
+- Comparison candidates for the evaluation phase: `claude-opus-5`, `claude-sonnet-5`. Model id, effort, and prompt version are config, frozen per campaign.
+- Not used: Haiku 4.5 (no adaptive thinking, no effort control).
+- Requires 30-day data retention on the Anthropic org (Fable 5.1 is not served under zero-data-retention without authorization).
+- Cost order of magnitude at daily cadence: roughly 0.30 USD per decision bar and 0.10 USD per observation tick at Fable 5.1 rates, before prompt-cache savings on the stable prefix.
