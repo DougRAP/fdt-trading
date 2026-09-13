@@ -48,7 +48,7 @@ export function JournalHistory() {
   const rootOf = (id: string) => st.campaigns[id]?.root ?? "NQ";
   const superseded = new Set(st.supersededEventIds);
   return (
-    <Drawer open={state.drawer === "journal"} title={`Journal history · ${state.mode === "manual" ? "Manual journal" : "Paper only"} · All time · fixture session`} onClose={() => actions.openDrawer(null)}>
+    <Drawer open={state.drawer === "journal"} title={`Journal history · ${state.mode === "manual" ? "Manual journal" : "Paper only"} · All time · fixture session · USD`} onClose={() => actions.openDrawer(null)}>
       <h3>Campaigns</h3>
       {ledger.campaigns.length === 0 ? (
         <p className="cp-small">No campaigns recorded.</p>

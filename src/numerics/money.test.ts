@@ -95,11 +95,14 @@ describe("formatting", () => {
   });
 
   it("formats with thousands separators and cents", () => {
-    expect(formatMils(mils(1_060_000))).toBe("$1,060.00");
-    expect(formatMils(mils(-5000))).toBe("-$5.00");
-    expect(formatMils(mils(0))).toBe("$0.00");
-    expect(formatMils(mils(15625))).toBe("$15.63");
-    expect(formatMils(mils(1_000_000_000))).toBe("$1,000,000.00");
-    expect(formatMils(mils(2500), { signed: true })).toBe("+$2.50");
+    expect(formatMils(mils(1_060_000))).toBe("1,060.00");
+    expect(formatMils(mils(-5000))).toBe("-5.00");
+    expect(formatMils(mils(0))).toBe("0.00");
+    expect(formatMils(mils(15625))).toBe("15.63");
+    expect(formatMils(mils(1_000_000_000))).toBe("1,000,000.00");
+    expect(formatMils(mils(2500), { signed: true })).toBe("+2.50");
+    expect(formatMils(mils(2_070_000), { signed: true })).toBe("+2,070.00");
+    expect(formatMils(mils(0), { signed: true })).toBe("0.00");
+    expect(formatMils(mils(1_060_000))).not.toContain("$");
   });
 });

@@ -51,7 +51,7 @@ function PlannedGroup({ snapshot, side, equityMils, contractsOverride }: { snaps
   if (!plan.ok) {
     return (
       <div className="cp-group">
-        <h3>Planned (model)</h3>
+        <h3>Planned (model · USD)</h3>
         <p className="cp-small">{snapshot.status === "UNAVAILABLE" ? "Signal unavailable" : "No plan"} · {plan.reason}</p>
       </div>
     );
@@ -60,7 +60,7 @@ function PlannedGroup({ snapshot, side, equityMils, contractsOverride }: { snaps
   const note = `${plan.marginNote} · risk includes ${plan.perContractRisk.costConvention} · a planned loss, not a guaranteed maximum`;
   return (
     <div className="cp-group">
-      <h3>Planned (model v{state.cfg.version} · synthetic inputs)</h3>
+      <h3>Planned (model v{state.cfg.version} · synthetic inputs · USD)</h3>
       <div className="cp-fields">
         <div className="cp-field">Contract<span className="cp-v">{plan.instrument.contract}</span></div>
         <div className="cp-field">Side<span className="cp-v">{sideText(plan.side)}</span></div>
@@ -68,7 +68,7 @@ function PlannedGroup({ snapshot, side, equityMils, contractsOverride }: { snaps
         <div className="cp-field">Planned entry<span className="cp-v">{fmtPrice(plan.plannedEntry, root)}</span></div>
         <div className="cp-field">Proposed initial stop<span className="cp-v">{fmtPrice(plan.plannedStop, root)}</span></div>
         <div className="cp-field">Distance<span className="cp-v cp-ellipsis" title={`${fmtPoints(plan.distanceTicks, root)} · ${fmtPct(plan.pctOfEntry)} of entry`}>{fmtPrice(plan.distanceTicks, root)} pts · {fmtPct(plan.pctOfEntry)}</span></div>
-        <div className="cp-field">Planned $ risk<span className="cp-v cp-ellipsis" title={`${fmtMoney(plan.riskMils)} = ${plan.contracts} contracts × ${fmtMoney(plan.perContractRisk.totalMils)} per contract`}>{fmtMoney(plan.riskMils)} ({plan.contracts}×)</span></div>
+        <div className="cp-field">Planned risk<span className="cp-v cp-ellipsis" title={`${fmtMoney(plan.riskMils)} = ${plan.contracts} contracts × ${fmtMoney(plan.perContractRisk.totalMils)} per contract`}>{fmtMoney(plan.riskMils)} ({plan.contracts}×)</span></div>
         <div className="cp-field">% of account equity<span className="cp-v">{plan.pctOfEquity === null ? `${EM_DASH} · equity not entered` : fmtPct(plan.pctOfEquity)}</span></div>
       </div>
       <p className="cp-small cp-ellipsis" title={note}>{note} (full text in Formula drawer)</p>
@@ -80,7 +80,7 @@ function OpenState({ summary, c }: { summary: PositionSummary; c: Campaign }) {
   const root = c.root;
   return (
     <div className="cp-group">
-      <h3>Open position (pinned)</h3>
+      <h3>Open position (pinned · USD)</h3>
       <div className="cp-flags" aria-live="polite">
         {summary.flags.length ? summary.flags.map((f) => <span key={f} className="cp-flag">{f}</span>) : <span className="cp-small">No flags · HOLD</span>}
       </div>
@@ -184,9 +184,9 @@ function ManualEntryForm({ snapshot, side, equityMils }: { snapshot: SignalSnaps
     }
     try {
       feesMils = dollarsToMils(fees.trim() || "0");
-      if (feesMils < 0) errors.fees = "Entry fees must be $0 or more";
+      if (feesMils < 0) errors.fees = "Entry fees must be 0.00 or more";
     } catch {
-      errors.fees = "Entry fees must be a dollar amount with at most 3 decimals";
+      errors.fees = "Entry fees must be a USD amount with at most 3 decimals";
     }
     if (brokerStatus !== "none" && brokerPrice.trim() !== "") {
       try {
@@ -249,7 +249,7 @@ function ManualEntryForm({ snapshot, side, equityMils }: { snapshot: SignalSnaps
 
   return (
     <div className="cp-group">
-      <h3>Actual fill (recorded at your broker)</h3>
+      <h3>Actual fill (recorded at your broker · USD)</h3>
       <div className="cp-fields">
         <div className="cp-field">Contract<span className="cp-v">{inst.contract}</span></div>
         <label>
@@ -263,7 +263,7 @@ function ManualEntryForm({ snapshot, side, equityMils }: { snapshot: SignalSnaps
         <label>Fill price<input inputMode="decimal" value={price} onChange={(ev) => setPrice(ev.target.value)} aria-invalid={!!fieldErrors.price} />{fieldError("price")}</label>
         <label>Fill time<input type="datetime-local" value={time} onChange={(ev) => setTime(ev.target.value)} aria-invalid={!!fieldErrors.time} />{fieldError("time")}</label>
         <label>Timezone<input value={tz} onChange={(ev) => setTz(ev.target.value)} /></label>
-        <label>Entry fees $<input inputMode="decimal" value={fees} onChange={(ev) => setFees(ev.target.value)} aria-invalid={!!fieldErrors.fees} />{fieldError("fees")}</label>
+        <label>Entry fees<input inputMode="decimal" value={fees} onChange={(ev) => setFees(ev.target.value)} aria-invalid={!!fieldErrors.fees} />{fieldError("fees")}</label>
         <div className="cp-field">
           <span>Broker stop status · price</span>
           <span className="cp-pair">
@@ -313,12 +313,12 @@ function ManualOpenActions({ c, snapshot }: { c: Campaign; snapshot: SignalSnaps
 
   return (
     <div className="cp-group">
-      <h3>Record (actual)</h3>
+      <h3>Record (actual · USD)</h3>
       <div className="cp-fields">
         <label>Exit price<input inputMode="decimal" value={exitPrice} onChange={(ev) => setExitPrice(ev.target.value)} /></label>
         <label>Exit contracts<input type="number" min={1} max={c.remaining} step={1} value={exitQty} onChange={(ev) => setExitQty(ev.target.value)} /></label>
         <label>Exit time<input type="datetime-local" value={exitTime} onChange={(ev) => setExitTime(ev.target.value)} /></label>
-        <label>Exit fees $<input inputMode="decimal" value={exitFees} onChange={(ev) => setExitFees(ev.target.value)} /></label>
+        <label>Exit fees<input inputMode="decimal" value={exitFees} onChange={(ev) => setExitFees(ev.target.value)} /></label>
         <label style={{ gridColumn: "span 3" }}>Deviation reason (optional)<input value={exitDeviation} onChange={(ev) => setExitDeviation(ev.target.value)} /></label>
         <div className="cp-field">
           <span>&nbsp;</span>
@@ -453,13 +453,13 @@ function PaperTicket({ snapshot, active }: { snapshot: SignalSnapshot | null; ac
   return (
     <>
       <p className="cp-small">
-        PAPER ONLY · deterministic engine · {paused ? "PAUSED (no new entries; stops still monitored)" : "running"} · stop monitor {monitor.healthy ? "healthy" : "not healthy"} ({monitor.lastCheckedAt ? `last check ${fmtTime(monitor.lastCheckedAt)}` : "never ran"}) · equity {fmtMoney(equity)} · Synthetic demo bars, not market data
+        PAPER ONLY · deterministic engine · {paused ? "PAUSED (no new entries; stops still monitored)" : "running"} · stop monitor {monitor.healthy ? "healthy" : "not healthy"} ({monitor.lastCheckedAt ? `last check ${fmtTime(monitor.lastCheckedAt)}` : "never ran"}) · equity {fmtMoney(equity)} USD · Synthetic demo bars, not market data
       </p>
       {active ? (
         <>
           {active.state === "OPEN" && <OpenState summary={positionSummary(active, ledger.state.marks[active.root] ?? null, clock, 2 * DAY_MS)} c={active} />}
           <div className="cp-group">
-            <h3>{active.state === "PENDING" ? "Pending (queued at decision bar; not filled)" : "Plan at decision"}</h3>
+            <h3>{active.state === "PENDING" ? "Pending (queued at decision bar; not filled · USD)" : "Plan at decision (USD)"}</h3>
             <div className="cp-fields">
               <div className="cp-field">Contract<span className="cp-v">{active.contract}</span></div>
               <div className="cp-field">Side<span className="cp-v">{sideText(active.side)}</span></div>

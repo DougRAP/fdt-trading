@@ -12,7 +12,7 @@ export function CampaignResults() {
     <section className="cp-panel" aria-labelledby="results-title">
       <div className="cp-row">
         <h2 id="results-title">Campaign results</h2>
-        <span className="cp-small">All time · fixture session · {modeLabel}</span>
+        <span className="cp-small">All time · fixture session · {modeLabel} · USD</span>
       </div>
       <div className="cp-results">
         <div>

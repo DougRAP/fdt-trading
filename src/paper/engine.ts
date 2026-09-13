@@ -9,7 +9,7 @@
 import { freezeModelConfig, modelConfig, type InstrumentRoot, type ModelConfig } from "../config/modelConfig";
 import type { SignalSnapshot } from "../formula/types";
 import { INSTRUMENTS } from "../instruments/metadata";
-import { floorDivMils, mulMilsInt, type Mils } from "../numerics/money";
+import { floorDivMils, formatMils, mulMilsInt, type Mils } from "../numerics/money";
 import type { Ticks } from "../numerics/ticks";
 import { topQualified } from "../ranking/rank";
 import { modeledEntryFill, modeledStopExitFill, perContractRisk, positionSize } from "../sizing/sizing";
@@ -120,7 +120,7 @@ export function onExecutableBar(ledger: Ledger, bar: EngineBar, trail: TrailInpu
         timestamp: bar.availableAt,
         actual: false,
         campaignId: c.id,
-        reason: `opening gap: one contract risks ${risk.totalMils} mils, above the ${c.plan.riskBudgetMils} mils budget`,
+        reason: `opening gap: one contract risks ${formatMils(risk.totalMils)}, above the ${formatMils(c.plan.riskBudgetMils)} budget`,
       };
       if (ledger.append(cancel).applied) events.push(cancel);
       return { campaignId: c.id, exited: null, stopChanged: false, stopFrozen: false, closeRequested: false, events };

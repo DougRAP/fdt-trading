@@ -18,7 +18,7 @@ export function ResultsDetails() {
   const dd = ledger.maxDrawdown();
   const rows: [string, RootStats][] = [["All", stats], ...(Object.entries(byRoot) as [string, RootStats][])];
   return (
-    <Drawer open={state.drawer === "results"} title={`Results details · ${state.mode === "manual" ? "Manual journal" : "Paper only"} · All time · fixture session`} onClose={() => actions.openDrawer(null)}>
+    <Drawer open={state.drawer === "results"} title={`Results details · ${state.mode === "manual" ? "Manual journal" : "Paper only"} · All time · fixture session · USD`} onClose={() => actions.openDrawer(null)}>
       <div className="cp-scroll">
         <table>
           <thead>

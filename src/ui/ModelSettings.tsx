@@ -49,7 +49,7 @@ export function ModelSettings() {
   }
 
   return (
-    <Drawer open={state.drawer === "settings"} title={`Model settings · current ${state.configLabel}`} onClose={() => actions.openDrawer(null)}>
+    <Drawer open={state.drawer === "settings"} title={`Model settings · current ${state.configLabel} · USD`} onClose={() => actions.openDrawer(null)}>
       <p className="cp-small">Saving creates a new settings version label. Running campaigns keep the frozen config they were entered under; nothing is changed silently. Windows (20 / 60 / 20) and the interval are fixed in v0.1. Parameters are research hypotheses, not optimized values.</p>
       <div className="cp-fields">
         {field("entryThreshold", "Entry threshold (S >)", "0.01")}

@@ -4,7 +4,7 @@
  */
 import { modelConfig, type CostFixture, type ModelConfig } from "../config/modelConfig";
 import type { Side } from "../formula/types";
-import { addMils, floorDivMils, mils, mulMilsInt, ticksToMils, type Mils } from "../numerics/money";
+import { addMils, floorDivMils, formatMils, mils, mulMilsInt, ticksToMils, type Mils } from "../numerics/money";
 import { ticks, type Ticks } from "../numerics/ticks";
 
 export const MARGIN_NOTE = "Margin constraint not modeled";
@@ -64,7 +64,7 @@ export function perContractRisk(input: {
     priceRiskMils,
     feesMils,
     totalMils: addMils(priceRiskMils, feesMils),
-    costConvention: `${input.cost.source}: fee ${input.cost.feePerContractPerSideMils} mils/contract/side, spread ${input.cost.spreadTicks} ticks, adverse ${input.cost.adverseTicksPerFill} tick per fill`,
+    costConvention: `${input.cost.source}: fee ${formatMils(input.cost.feePerContractPerSideMils)} per contract per side, spread ${input.cost.spreadTicks} ticks, adverse ${input.cost.adverseTicksPerFill} tick per fill`,
   };
 }
 
@@ -118,7 +118,7 @@ export function positionSize(input: {
     plannedLossMils,
     plannedLossPctOfEquity: input.equityMils > 0 ? plannedLossMils / input.equityMils : 0,
     skip,
-    skipReason: skip ? `one contract risks ${perContract} mils, above the ${budgetMils} mils budget` : null,
+    skipReason: skip ? `one contract risks ${formatMils(perContract)}, above the ${formatMils(budgetMils)} budget` : null,
     marginNote: MARGIN_NOTE,
   };
 }

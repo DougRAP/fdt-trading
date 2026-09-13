@@ -13,7 +13,7 @@ function assertSafeInt(n: number, what: string): void {
 
 /** Brand an integer as Mils. */
 export function mils(n: number): Mils {
-  assertSafeInt(n, "mils");
+  assertSafeInt(n, "money amount (internal integer)");
   return n as Mils;
 }
 
@@ -104,12 +104,15 @@ export function milsToDollarsExact(m: Mils): string {
   return `${sign}${intPart}.${frac}`;
 }
 
-/** Display string rounded to cents: 1060000 -> "$1,060.00"; -5000 -> "-$5.00". */
+/**
+ * Display string rounded to cents, no currency symbol (the unit is stated once per panel):
+ * 1060000 -> "1,060.00"; -5000 -> "-5.00"; signed option: 2070000 -> "+2,070.00".
+ */
 export function formatMils(m: Mils, options: { signed?: boolean } = {}): string {
   const cents = milsToCents(m);
   const sign = cents < 0 ? "-" : options.signed && cents > 0 ? "+" : "";
   const abs = Math.abs(cents);
   const intPart = Math.floor(abs / 100).toLocaleString("en-US");
   const frac = String(abs % 100).padStart(2, "0");
-  return `${sign}$${intPart}.${frac}`;
+  return `${sign}${intPart}.${frac}`;
 }

@@ -141,7 +141,7 @@ function applyEntryFill(state: LedgerState, e: EntryFillEvent): void {
   if (c.state !== "PENDING" && c.state !== "OPEN") throw new LedgerError(`cannot fill entry on ${c.state} campaign ${c.id}`);
   if (!Number.isInteger(e.quantity) || e.quantity <= 0) throw new LedgerError("entry quantity must be a positive integer");
   if (!Number.isSafeInteger(e.price) || e.price <= 0) throw new LedgerError("entry price must be a positive tick count");
-  if (!Number.isSafeInteger(e.feesMils) || e.feesMils < 0) throw new LedgerError("entry fees must be nonnegative mils");
+  if (!Number.isSafeInteger(e.feesMils) || e.feesMils < 0) throw new LedgerError("entry fees must be zero or more");
   const deviates = e.price !== c.plan.plannedEntry || e.quantity !== c.plan.contracts;
   if (deviates && e.fillModel === "actual-broker" && !e.deviationReason) {
     throw new LedgerError("deviationReason is required when an actual fill differs from the plan");
@@ -165,7 +165,7 @@ function applyEntryFill(state: LedgerState, e: EntryFillEvent): void {
   c.feesMils = addMils(c.feesMils, e.feesMils);
   c.netRealizedMils = subMils(c.grossRealizedMils, c.feesMils);
   if (e.deviationReason) c.deviationReasons.push(e.deviationReason);
-  if (!Number.isSafeInteger(e.perContractRiskMils) || e.perContractRiskMils < 0) throw new LedgerError("perContractRiskMils must be nonnegative mils");
+  if (!Number.isSafeInteger(e.perContractRiskMils) || e.perContractRiskMils < 0) throw new LedgerError("per-contract risk must be zero or more");
   // Frozen original risk: per-contract risk from the actual fill x contracts actually entered.
   const riskAdded = mils(e.perContractRiskMils * e.quantity);
   if (c.state === "PENDING") {
@@ -186,7 +186,7 @@ function applyExitFill(state: LedgerState, e: ExitFillEvent): void {
   if (!Number.isInteger(e.quantity) || e.quantity <= 0) throw new LedgerError("exit quantity must be a positive integer");
   if (e.quantity > c.remaining) throw new LedgerError(`exit quantity ${e.quantity} exceeds remaining ${c.remaining}`);
   if (!Number.isSafeInteger(e.price) || e.price <= 0) throw new LedgerError("exit price must be a positive tick count");
-  if (!Number.isSafeInteger(e.feesMils) || e.feesMils < 0) throw new LedgerError("exit fees must be nonnegative mils");
+  if (!Number.isSafeInteger(e.feesMils) || e.feesMils < 0) throw new LedgerError("exit fees must be zero or more");
   let left = e.quantity;
   let gross = 0;
   for (const lot of c.lots) {
@@ -274,7 +274,7 @@ export function applyEvent(state: LedgerState, e: LedgerEvent): void {
       break;
     }
     case "CASH_FLOW": {
-      if (!Number.isSafeInteger(e.amountMils)) throw new LedgerError("cash flow must be integer mils");
+      if (!Number.isSafeInteger(e.amountMils)) throw new LedgerError("cash flow must be a whole money amount");
       state.cashMils = addMils(state.cashMils, e.amountMils);
       state.externalCashFlowMils = addMils(state.externalCashFlowMils, e.amountMils);
       pushEquityPoint(state, e.timestamp, e.amountMils);

@@ -34,7 +34,7 @@ describe("worked long example (synthetic inputs)", () => {
     expect(risk.priceRiskMils).toBe(1_055_000);
     expect(risk.feesMils).toBe(5000);
     expect(risk.totalMils).toBe(1_060_000);
-    expect(risk.costConvention).toMatch(/fixture/);
+    expect(risk.costConvention).toBe("fixture: fee 2.50 per contract per side, spread 0 ticks, adverse 1 tick per fill");
   });
 
   it("budget 2,500,000 mils => 2 contracts, planned loss 2,120,000 = 0.212% of equity", () => {
@@ -76,7 +76,7 @@ describe("positionSize edge cases", () => {
     expect(size.budgetMils).toBe(1_000_000);
     expect(size.contracts).toBe(0);
     expect(size.skip).toBe(true);
-    expect(size.skipReason).toMatch(/above the 1000000 mils budget/);
+    expect(size.skipReason).toBe("one contract risks 1,060.00, above the 1,000.00 budget");
     expect(size.plannedLossMils).toBe(0);
     expect(size.marginNote).toBe(MARGIN_NOTE);
   });
