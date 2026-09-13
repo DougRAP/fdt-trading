@@ -9,6 +9,10 @@ import { modelConfig, type InstrumentRoot, type ModelConfig } from "../config/mo
 import type { SignalSnapshot } from "../formula/types";
 import { demoBarsFor, demoTrailInputs } from "../fixtures/paperBars";
 import { fixtureSnapshots } from "../fixtures/snapshots";
+import { fixtureSnapshotHistory, fixtureSnapshotsByBar } from "../fixtures/snapshotHistory";
+import { callInterpreter } from "../interpreter/client";
+import type { ClampedProposal, InterpreterResponse } from "../interpreter/types";
+import { askModel as askModelEngine, onModelBar, onModelDecisionBar, type InterpreterCall, type ModelBarResult, type ModelDecisionResult, type ModelEngineInput } from "../paper/modelEngine";
 import { Ledger } from "../ledger/ledger";
 import { MemoryStorage, loadLedger, saveLedger, type StorageLike } from "../ledger/storage";
 import { onDecisionBar, onExecutableBar, onObservationBar, pause as enginePause, resume as engineResume, type DecisionOutcome, type ObservationOutcome } from "../paper/engine";
@@ -119,6 +123,23 @@ export interface AppState {
   /** Bumped after every ledger mutation so consumers re-render. */
   ledgerVersion: number;
   storageKind: "localStorage" | "memory";
+  /** Paper (model): consult the interpreter on a step, or run the rules alone (D22). */
+  modelAssist: boolean;
+  /** True while an interpreter call is in flight; every call is user-initiated. */
+  modelInFlight: boolean;
+  modelError: string | null;
+  /** The latest reading for display, with what the risk engine cleared. */
+  modelReading: ModelReading | null;
+}
+
+export interface ModelReading {
+  mode: Mode;
+  kind: ModelDecisionResult["kind"] | "observation";
+  barEnd: string | null;
+  response: InterpreterResponse | null;
+  clamped: ClampedProposal | null;
+  reasons: string[];
+  at: string;
 }
 
 export interface AppActions {
@@ -133,6 +154,13 @@ export interface AppActions {
   paperStep(): ObservationOutcome | null;
   paperPause(): void;
   paperResume(): void;
+  /** Paper (model) decision bar: one interpreter call, then the clamped proposal is queued. */
+  paperModelStart(): Promise<ModelDecisionResult | null>;
+  /** Paper (model) step: the rules engine first, then the interpreter when model assist is on. */
+  paperModelStep(): Promise<ModelBarResult | null>;
+  /** Manual mode: ask the model for a reading. Records events; executes nothing. */
+  askModel(): Promise<ModelDecisionResult | null>;
+  setModelAssist(on: boolean): void;
   setNotice(text: string | null): void;
 }
 
@@ -171,10 +199,19 @@ function initialState(storage: StorageLike): AppState {
     notice: null,
     ledgerVersion: 0,
     storageKind: storage instanceof MemoryStorage ? "memory" : "localStorage",
+    modelAssist: true,
+    modelInFlight: false,
+    modelError: null,
+    modelReading: null,
   };
 }
 
-export function useAppStore(storage: StorageLike): AppStore {
+export interface AppDeps {
+  /** Injected in tests; the app posts to the interpreter function. */
+  interpreter?: InterpreterCall;
+}
+
+export function useAppStore(storage: StorageLike, deps: AppDeps = {}): AppStore {
   const [state, setState] = useState<AppState>(() => initialState(storage));
   const ref = useRef(state);
   ref.current = state;
@@ -194,6 +231,63 @@ export function useAppStore(storage: StorageLike): AppStore {
   }, []);
 
   const actions = useMemo<AppActions>(() => {
+    const interpreter: InterpreterCall = deps.interpreter ?? ((body) => callInterpreter(body));
+
+    const engineInputFor = (): ModelEngineInput => ({
+      interpreter,
+      histories: fixtureSnapshotHistory(ref.current.cfg),
+      snapshotsByBar: fixtureSnapshotsByBar(ref.current.cfg),
+      cfg: ref.current.cfg,
+    });
+
+    const reading = (mode: Mode, result: ModelDecisionResult): ModelReading => ({
+      mode,
+      kind: result.kind,
+      barEnd: result.request?.barEnd ?? null,
+      response: result.response,
+      clamped: result.clamped,
+      reasons: result.reasons,
+      at: new Date().toISOString(),
+    });
+
+    const noticeFor = (result: ModelDecisionResult): string => {
+      switch (result.kind) {
+        case "queued":
+          return `Model proposal cleared the risk engine and was queued as ${result.campaignId}. Nothing is filled until the next synthetic bar.`;
+        case "advisory":
+          return "Model reading recorded in the manual journal. Nothing was executed; record your own fills.";
+        case "no-proposal":
+          return "Model proposed no trade on this bar.";
+        case "not-executable":
+          return `Proposal logged, not executed: ${result.reasons.join("; ")}`;
+        case "rejected":
+          return `Model answer refused and logged unused: ${result.reasons.join("; ")}`;
+        case "call-failed":
+          return `Interpreter call failed: ${result.reasons.join("; ")}`;
+        case "already-answered":
+          return "This bar already has a stored model answer; no new call was made.";
+        case "position-active":
+          return "A paper (model) position is already active.";
+        case "paused":
+          return "Paper (model) engine is paused; no new entries.";
+      }
+    };
+
+    /** One interpreter call at a time, and never on a timer. */
+    const runModel = async <T>(mode: Mode, fn: (engineInput: ModelEngineInput) => Promise<T | null>): Promise<T | null> => {
+      if (ref.current.modelInFlight) return null;
+      setState((s) => ({ ...s, modelInFlight: true, modelError: null }));
+      try {
+        return await fn(engineInputFor());
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        bump({ modelError: `Interpreter error in ${mode}: ${message}` });
+        return null;
+      } finally {
+        setState((s) => ({ ...s, modelInFlight: false }));
+      }
+    };
+
     const demoFor = (mode: Mode): DemoProgress => {
       const c = ref.current.ledgers[mode].activeCampaign;
       if (!c) return { campaignId: null, next: 0, total: 0 };
@@ -262,6 +356,62 @@ export function useAppStore(storage: StorageLike): AppStore {
           return null;
         }
       },
+      async paperModelStart() {
+        return runModel("paperModel", async (engineInput) => {
+          const ledger = ref.current.ledgers.paperModel;
+          const result = await onModelDecisionBar(ledger, engineInput);
+          persist("paperModel");
+          bump({
+            demo: result.kind === "queued" ? { campaignId: result.campaignId, next: 0, total: 0 } : ref.current.demo,
+            selectedRoot: ledger.activeCampaign?.root ?? ref.current.selectedRoot,
+            modelReading: reading("paperModel", result),
+            notice: noticeFor(result),
+          });
+          return result;
+        });
+      },
+      async paperModelStep() {
+        return runModel("paperModel", async (engineInput) => {
+          const ledger = ref.current.ledgers.paperModel;
+          const c = ledger.activeCampaign;
+          if (!c) return null;
+          const snap = ref.current.snapshots.find((s) => s.root === c.root);
+          if (!snap) return null;
+          const bars = demoBarsFor(snap, c.side);
+          const progress = demoFor("paperModel");
+          const bar = bars[progress.next];
+          if (!bar) return null;
+          const trail = demoTrailInputs(snap);
+          if (!ref.current.modelAssist) {
+            // Model assist off: the same ledger, rules only, so the loop's contribution stays measurable.
+            const out = progress.next === 0 ? onExecutableBar(ledger, bar, trail, ref.current.cfg) : onObservationBar(ledger, bar, trail, ref.current.cfg);
+            persist("paperModel");
+            bump({ demo: { campaignId: c.id, next: progress.next + 1, total: bars.length } });
+            return { rules: out, events: out.events, response: null, clamped: null, reasons: ["model assist is off; this step ran the rules only"], applied: null, lesson: null, digest: null };
+          }
+          const result = await onModelBar(ledger, bar, trail, engineInput);
+          persist("paperModel");
+          bump({
+            demo: { campaignId: c.id, next: progress.next + 1, total: bars.length },
+            modelReading: result.response
+              ? { mode: "paperModel", kind: "observation", barEnd: bar.barEnd, response: result.response, clamped: result.clamped, reasons: result.reasons, at: new Date().toISOString() }
+              : ref.current.modelReading,
+          });
+          return result;
+        });
+      },
+      async askModel() {
+        return runModel("manual", async (engineInput) => {
+          const ledger = ref.current.ledgers.manual;
+          const result = await askModelEngine(ledger, engineInput);
+          persist("manual");
+          bump({ modelReading: reading("manual", result), notice: noticeFor(result) });
+          return result;
+        });
+      },
+      setModelAssist(on) {
+        setState((s) => ({ ...s, modelAssist: on }));
+      },
       paperPause() {
         enginePause(ref.current.ledgers.paper, new Date().toISOString());
         persist("paper");
@@ -276,13 +426,13 @@ export function useAppStore(storage: StorageLike): AppStore {
         setState((s) => ({ ...s, notice: text }));
       },
     };
-  }, [bump, persist, storage]);
+  }, [bump, deps.interpreter, persist, storage]);
 
   return { state, actions, storage };
 }
 
-export function AppProvider(props: { storage: StorageLike; children: ReactNode }) {
-  const store = useAppStore(props.storage);
+export function AppProvider(props: { storage: StorageLike; children: ReactNode; deps?: AppDeps }) {
+  const store = useAppStore(props.storage, props.deps ?? {});
   return createElement(Ctx.Provider, { value: store }, props.children);
 }
 
