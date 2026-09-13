@@ -121,6 +121,17 @@ describe("manual journal: entry, partial exits, close (acceptance #7, #9)", () =
     // D_short = ATR 25 x [1.5 + max(0, -1 x 0.60)] = 37.50 pts => 22000.25 + 37.50 = 22037.75 (rounded up to the tick).
     expect(c.proposedStop?.stop).toBe(px("22037.75"));
     expect(c.originalRiskMils).toBe((151 * 5000 + 5000) * 2);
+    // the campaign's decision distance is replaced by the filled side's D (150 ticks), recorded on the fill event
+    expect(c.decisionDistance.side).toBe(-1);
+    expect(c.decisionDistance.dTicks).toBe(150);
+    const fillEvent = events.find((e) => e.type === "ENTRY_FILL");
+    expect(fillEvent?.type === "ENTRY_FILL" && fillEvent.decisionDistance?.dTicks).toBe(150);
+    // a fill at plan carries no decisionDistance and leaves the planned D in place
+    const plain = new Ledger("manual");
+    const planEvents = recordEntryFill(entryInput());
+    plain.appendAll(planEvents);
+    expect(planEvents.find((e) => e.type === "ENTRY_FILL")).not.toHaveProperty("decisionDistance", expect.anything());
+    expect(plain.activeCampaign?.decisionDistance.dTicks).toBe(210);
   });
 
   it("two partial exits with identical fill times but different ids both apply", () => {

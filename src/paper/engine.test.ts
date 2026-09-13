@@ -96,20 +96,18 @@ describe("decision bar", () => {
     expect(ledger.events).toHaveLength(events);
   });
 
-  it("a decision bar already used for a closed campaign is skipped for that root, and the next candidate is considered", () => {
+  it("a repeated decision-bar callback never opens a second campaign: after NQ closes, the same bar is skipped outright", () => {
     const ledger = queued();
     onExecutableBar(ledger, bar(5, "22000", "22010", "21940", "21990"), TRAIL); // stop hit in the fill bar => CLOSED
     expect(ledger.activeCampaign).toBeNull();
+    const n = ledger.events.length;
     const out = onDecisionBar(ledger, SNAPS, EQUITY);
-    expect(out).toMatchObject({ kind: "queued", root: "ES", skipped: [{ root: "NQ", reason: "decision bar 2026-01-02T21:00:00Z already used for NQ" }] });
-    expect(ledger.campaigns).toHaveLength(2);
-    // with only NQ qualifying, the used bar yields a skip and no events
-    const onlyNQ = SNAPS.filter((s) => s.root === "NQ" || s.status !== "QUALIFIED");
-    const single = queued();
-    onExecutableBar(single, bar(5, "22000", "22010", "21940", "21990"), TRAIL);
-    const n = single.events.length;
-    expect(onDecisionBar(single, onlyNQ, EQUITY)).toEqual({ kind: "skip", root: "NQ", reason: "decision bar 2026-01-02T21:00:00Z already used for NQ", skipped: [{ root: "NQ", reason: "decision bar 2026-01-02T21:00:00Z already used for NQ" }] });
-    expect(single.events).toHaveLength(n);
+    expect(out).toEqual({ kind: "skip", root: "NQ", reason: "decision bar 2026-01-02T21:00:00Z already used", skipped: [] });
+    expect(ledger.events).toHaveLength(n);
+    expect(ledger.campaigns).toHaveLength(1);
+    // the guard is per bar, not per root: ES on the same bar is not considered either
+    expect(onDecisionBar(ledger, SNAPS.filter((s) => s.root !== "NQ"), EQUITY)).toMatchObject({ kind: "skip", reason: "decision bar 2026-01-02T21:00:00Z already used" });
+    expect(ledger.campaigns).toHaveLength(1);
   });
 
   it("a running campaign is governed by its frozen config, not the cfg passed to later bars", () => {

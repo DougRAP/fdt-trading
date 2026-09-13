@@ -149,7 +149,10 @@ function applyEntryFill(state: LedgerState, e: EntryFillEvent): void {
   if (deviates && e.fillModel === "actual-broker" && !e.deviationReason) {
     throw new LedgerError("deviationReason is required when an actual fill differs from the plan (price, contracts or side)");
   }
-  if (sideDeviates) c.side = e.side;
+  if (sideDeviates) {
+    c.side = e.side;
+    if (e.decisionDistance) c.decisionDistance = e.decisionDistance;
+  }
   c.fills.push({
     eventId: e.id,
     kind: "entry",

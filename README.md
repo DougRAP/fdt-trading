@@ -55,7 +55,9 @@ Everything is fixture in this release. The boundaries are explicit so nothing sy
 - localStorage keys: `fdt.v1.manual`, `fdt.v1.paper` (ledgers), `fdt.v1.config` (model settings).
 - Ledger document: `{ schemaVersion: 1, mode, startingEquityMils, events: [...] }`. The log is append-only; state is derived by reducing events. Duplicate event ids are no-ops; corrections append a new event with `supersededEventId` and the original stays in the log.
 - A stored ledger with an unknown `schemaVersion`, wrong mode, invalid JSON, or an invalid event is **refused with a reason**. The app shows a banner, runs with an empty in-memory ledger for that mode, and never overwrites or migrates the stored copy.
-- One tolerant read (not a migration): a stored `MARK` event without the `completedClose` field (written before the field existed) is read as `completedClose: false`. Such a mark updates P&L and equity but never advances the trailing-stop reference. The stored document is left as is until the next save.
+- Two tolerant reads (not migrations), applied in memory only; the stored document is left as is until the next save:
+  - a stored `MARK` without `completedClose` is read as `true` when its source is `paper-observation-bar` (the engine's bar-close marks) and `false` otherwise (a mark of unknown kind never advances the trailing-stop reference);
+  - a stored `ENTRY_FILL` without `side` takes the side of its campaign's `CAMPAIGN_QUEUED` event (old fills always matched the plan); if that queued event is absent the ledger is refused by event id.
 - If localStorage is unavailable, an in-memory store is used and a banner says persistence is session-only.
 
 ## Model settings versioning

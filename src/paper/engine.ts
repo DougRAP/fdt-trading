@@ -68,6 +68,12 @@ export function onDecisionBar(ledger: Ledger, snapshots: readonly SignalSnapshot
   const qualified = rankSnapshots(snapshots).filter((e) => e.group === "qualified").map((e) => e.snapshot);
   if (qualified.length === 0) return { kind: "no-qualifying" };
 
+  // A decision bar is consumed once per ledger: a repeated callback for the same bar (any root) never
+  // opens a second campaign. Fall-through between candidates applies only within a single call.
+  const barEnd = qualified[0]!.barEnd;
+  const used = Object.values(state.campaigns).find((c) => c.frozenSnapshot.barEnd === barEnd);
+  if (used) return { kind: "skip", root: used.root, reason: `decision bar ${barEnd} already used`, skipped: [] };
+
   const skipped: SkippedCandidate[] = [];
   for (const top of qualified) {
     const root = top.root;

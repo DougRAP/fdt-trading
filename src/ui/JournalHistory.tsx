@@ -10,7 +10,7 @@ function describe(e: LedgerEvent, root: (id: string) => InstrumentRoot): string 
       return `${e.root} ${e.side === 1 ? "long" : "short"} · plan ${e.plan.contracts} @ ${fmtPrice(e.plan.plannedEntry, e.root)} stop ${fmtPrice(e.plan.plannedStop, e.root)} · config v${e.frozenConfig.version} frozen`;
     case "ENTRY_FILL": {
       const r = root(e.campaignId);
-      return `entry ${e.quantity} @ ${fmtPrice(e.price, r)} fees ${fmtMoney(e.feesMils)} · ${e.fillModel}${e.deviationReason ? ` · deviation: ${e.deviationReason}` : ""}`;
+      return `entry ${e.side === 1 ? "long" : "short"} ${e.quantity} @ ${fmtPrice(e.price, r)} fees ${fmtMoney(e.feesMils)} · ${e.fillModel}${e.deviationReason ? ` · deviation: ${e.deviationReason}` : ""}`;
     }
     case "EXIT_FILL": {
       const r = root(e.campaignId);

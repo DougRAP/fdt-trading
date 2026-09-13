@@ -8,7 +8,7 @@ export function FormulaDetails() {
   const s = selectedSnapshot(state);
   const plan = s ? draftPlan(s, candidateSide(s), null, state.cfg) : null;
   return (
-    <Drawer open={state.drawer === "formula"} title="Formula definitions & selected inputs (model v0.1, unvalidated)" onClose={() => actions.openDrawer(null)}>
+    <Drawer open={state.drawer === "formula"} title={`Formula definitions & selected inputs (model v${s ? s.modelVersion : state.cfg.version}, unvalidated)`} onClose={() => actions.openDrawer(null)}>
       <div className="cp-equation">
         Q_t = V_t / mean(V_t−20 … V_t−1). A_t = valid constituents with volume above their own preceding 20-bar mean / valid count (≥95% coverage required). H_t = (advancing − declining) / valid count, unchanged stay in the denominator. u_t = Q_t / A_t. Δu_t = u_t − u_t−1; ΔH_t = H_t − H_t−1. σ = sample SD (ddof=1) of the 60 preceding changes, excluding the current one. S_d,t = min(Δu_t/σΔu, d·ΔH_t/σΔH). Qualifies if S &gt; {state.cfg.entryThreshold.toFixed(2)}, d·H ≥ {state.cfg.breadthThreshold.toFixed(2)}, d·(close_t − close_t−1) &gt; 0, inputs valid and fresh. Stop: SMA ATR20 (mean of TR over t−19..t), D = ATR20 × [{state.cfg.stopBase.toFixed(1)} + max(0, d·H)]; long stop = E − D rounded down, short = E + D rounded up; ratchet from highest/lowest completed close, never loosens. Sizing: floor(equity × {(state.cfg.riskBudgetPct * 100).toFixed(2)}% / per-contract risk incl. modeled costs). Score is not a probability.
       </div>

@@ -24,6 +24,7 @@ function Console() {
         ) : null,
       )}
       {state.configError && <p className="cp-banner" role="alert">{state.configError}</p>}
+      {state.engineError && <p className="cp-banner" role="alert">{state.engineError}</p>}
       {state.storageKind === "memory" && <p className="cp-banner">localStorage unavailable: ledgers persist only for this session.</p>}
       <div className="cp-layout">
         <Observer />

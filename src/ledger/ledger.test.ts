@@ -95,18 +95,25 @@ describe("ledger separation and persistence (acceptance #7)", () => {
     const missing = loadLedger(storage, "manual");
     expect(missing.ok).toBe(false);
     expect(!missing.ok && missing.reason).toBe("stored ledger refused: event q1 (CAMPAIGN_QUEUED) is missing required field plan");
-    // shape passes but the reducer throws a non-LedgerError (plan is not an object): still a refusal, never an exception
-    storage.setItem(LEDGER_KEYS.manual, doc([{ id: "q2", type: "CAMPAIGN_QUEUED", timestamp: "2026-01-01T00:00:00Z", actual: true, campaignId: "c", mode: "manual", root: "NQ", contract: "NQ · SYNTHETIC", side: 1, plan: null, frozenConfig: {}, frozenSnapshot: {}, decisionDistance: {} }]));
+    // plan present but not an object: caught by the nested shape check, by name
+    storage.setItem(LEDGER_KEYS.manual, doc([{ id: "q2", type: "CAMPAIGN_QUEUED", timestamp: "2026-01-01T00:00:00Z", actual: true, campaignId: "c", mode: "manual", root: "NQ", contract: "NQ · SYNTHETIC", side: 1, plan: null, frozenConfig: { version: "0.1", costs: { NQ: {} } }, frozenSnapshot: { root: "NQ" }, decisionDistance: { dTicks: 210 } }]));
+    expect(loadLedger(storage, "manual")).toMatchObject({ ok: false, reason: "stored ledger refused: event q2 (CAMPAIGN_QUEUED) plan.contracts must be an integer" });
+    // shape passes but the reducer throws a non-LedgerError (STOP_SET with stop: null): still a refusal, never an exception
+    const good = manualWithEntry();
+    saveLedger(storage, good);
+    const withNullStop = JSON.parse(storage.getItem(LEDGER_KEYS.manual)!) as { events: unknown[] };
+    withNullStop.events.push({ id: "s-null", type: "STOP_SET", timestamp: "2026-01-06T00:00:00Z", actual: false, campaignId: "manual:NQ:1", kind: "proposed", stop: null });
+    storage.setItem(LEDGER_KEYS.manual, JSON.stringify(withNullStop));
     const thrown = loadLedger(storage, "manual");
     expect(thrown.ok).toBe(false);
-    expect(!thrown.ok && thrown.reason).toMatch(/^stored ledger failed validation: /);
+    expect(!thrown.ok && thrown.reason).toMatch(/^stored ledger failed validation: event s-null: TypeError/);
     storage.setItem(LEDGER_KEYS.manual, doc([null, 5]));
     expect(loadLedger(storage, "manual")).toMatchObject({ ok: false, reason: "stored ledger refused: event #0 is not an object" });
     storage.setItem(LEDGER_KEYS.manual, doc([{ type: "MARK" }]));
     expect(loadLedger(storage, "manual")).toMatchObject({ ok: false, reason: "stored ledger refused: event #0 has no string id" });
   });
 
-  it("a stored MARK without completedClose loads as a plain mark and does not move the ratchet reference", () => {
+  it("a stored MARK without completedClose loads: paper bar-close marks as completed, anything else as a plain mark", () => {
     const storage = new MemoryStorage();
     const manual = manualWithEntry();
     saveLedger(storage, manual);
@@ -122,6 +129,61 @@ describe("ledger separation and persistence (acceptance #7)", () => {
     expect(r.ledger.activeCampaign?.extremeClose).toBeNull();
     // the stored document itself is untouched by the read
     expect(storage.getItem(LEDGER_KEYS.manual)).toBe(JSON.stringify(stored));
+
+    // paper: an engine bar-close mark stored before the field existed is a completed close
+    const paper = new Ledger("paper");
+    onDecisionBar(paper, fixtureSnapshots(), paper.equityMils);
+    onExecutableBar(paper, { root: "NQ", barEnd: "2026-01-05T21:00:00Z", availableAt: "2026-01-05T21:05:00Z", open: px("22000"), high: px("22050"), low: px("21980"), close: px("22040") }, { atrTicks: 100, H: 0.6 });
+    saveLedger(storage, paper);
+    const pdoc = JSON.parse(storage.getItem(LEDGER_KEYS.paper)!) as { events: Record<string, unknown>[] };
+    for (const e of pdoc.events) if (e.type === "MARK") delete e.completedClose;
+    pdoc.events.push({ id: "old-paper-mark", type: "MARK", timestamp: "2026-01-06T21:00:00Z", actual: false, root: "NQ", price: px("22090"), observedAt: "2026-01-06T21:00:00Z", source: "paper-observation-bar" });
+    storage.setItem(LEDGER_KEYS.paper, JSON.stringify(pdoc));
+    const p = loadLedger(storage, "paper");
+    expect(p.ok).toBe(true);
+    if (!p.ok) throw new Error(p.reason);
+    expect(p.ledger.activeCampaign?.extremeClose).toBe(px("22090"));
+  });
+
+  it("a stored ENTRY_FILL without side takes the campaign's planned side; refused when the queued event is missing", () => {
+    const storage = new MemoryStorage();
+    const manual = manualWithEntry();
+    saveLedger(storage, manual);
+    const stored = JSON.parse(storage.getItem(LEDGER_KEYS.manual)!) as { events: Record<string, unknown>[] };
+    for (const e of stored.events) if (e.type === "ENTRY_FILL") delete e.side;
+    const text = JSON.stringify(stored);
+    storage.setItem(LEDGER_KEYS.manual, text);
+    const r = loadLedger(storage, "manual");
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error(r.reason);
+    expect(r.ledger.activeCampaign?.side).toBe(1);
+    expect(r.ledger.activeCampaign?.fills[0]?.side).toBe(1);
+    expect(r.ledger.activeCampaign?.deviationReasons).toEqual([]);
+    expect(storage.getItem(LEDGER_KEYS.manual)).toBe(text);
+    // without the queued event there is no planned side to borrow
+    const orphan = { ...stored, events: stored.events.filter((e) => e.type !== "CAMPAIGN_QUEUED") };
+    storage.setItem(LEDGER_KEYS.manual, JSON.stringify(orphan));
+    const o = loadLedger(storage, "manual");
+    expect(o.ok).toBe(false);
+    expect(!o.ok && o.reason).toBe("stored ledger refused: event m1:fill (ENTRY_FILL) has no side and no CAMPAIGN_QUEUED event for campaign manual:NQ:1");
+  });
+
+  it("nested shape: CAMPAIGN_QUEUED with an empty frozenConfig is refused by name", () => {
+    const storage = new MemoryStorage();
+    const manual = manualWithEntry();
+    saveLedger(storage, manual);
+    const stored = JSON.parse(storage.getItem(LEDGER_KEYS.manual)!) as { events: Record<string, unknown>[] };
+    const q = stored.events.find((e) => e.type === "CAMPAIGN_QUEUED")!;
+    q.frozenConfig = {};
+    storage.setItem(LEDGER_KEYS.manual, JSON.stringify(stored));
+    expect(loadLedger(storage, "manual")).toMatchObject({ ok: false, reason: "stored ledger refused: event m1 (CAMPAIGN_QUEUED) frozenConfig.version must be a string" });
+    q.frozenConfig = { version: "0.1", costs: {} };
+    storage.setItem(LEDGER_KEYS.manual, JSON.stringify(stored));
+    expect(loadLedger(storage, "manual")).toMatchObject({ ok: false, reason: "stored ledger refused: event m1 (CAMPAIGN_QUEUED) frozenConfig.costs must contain root NQ" });
+    q.frozenConfig = (manual.events[0] as { frozenConfig: unknown }).frozenConfig;
+    q.decisionDistance = { side: 1 };
+    storage.setItem(LEDGER_KEYS.manual, JSON.stringify(stored));
+    expect(loadLedger(storage, "manual")).toMatchObject({ ok: false, reason: "stored ledger refused: event m1 (CAMPAIGN_QUEUED) decisionDistance.dTicks must be a number" });
   });
 
   it("reloading and re-appending the same events is idempotent", () => {
@@ -181,10 +243,16 @@ describe("stats and drawdown (acceptance #9)", () => {
     expect(ledger.equitySeries).toHaveLength(3);
     expect(ledger.equitySeries[0]?.freshness).toBe("no-mark");
     expect(ledger.maxDrawdown()).toBeNull();
-    // seeding equity afterwards gives a base for later points
+    // seeding equity afterwards gives a base: scanning starts at the seed point (equity 250,997,500)
     ledger.append(recordCashFlow({ id: "cf", amountMils: mils(250_000_000), note: "seed", at: "2026-01-08T00:00:00Z" }));
-    ledger.append(recordMark({ id: "k3", root: "NQ", price: px("22000.25"), observedAt: "2026-01-09T21:00:00Z", source: "quote" }));
-    expect(ledger.maxDrawdown()).toBeNull(); // first scanned point (k1) still had base 0
+    expect(ledger.equityMils).toBe(250_997_500);
+    // a 602-tick drop = 3,010,000 mils => ~1.2% swing from the seeded equity
+    ledger.append(recordMark({ id: "k3", root: "NQ", price: px("21899.75"), observedAt: "2026-01-09T21:00:00Z", source: "quote" }));
+    const dd = ledger.maxDrawdown()!;
+    expect(dd.peakMils).toBe(250_997_500);
+    expect(dd.troughMils).toBe(247_987_500);
+    expect(dd.value).toBeCloseTo(0.012, 3);
+    expect(dd.points).toBe(2);
   });
 
   it("external cash flows shift the peak basis instead of counting as P&L", () => {

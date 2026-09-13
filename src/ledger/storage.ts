@@ -83,9 +83,10 @@ export function loadLedger(storage: StorageLike, mode: Mode, options: LedgerOpti
     const problem = validateEventShape(doc.events[i], i);
     if (problem) return { ok: false, reason: `stored ledger refused: ${problem}`, raw };
   }
+  const normalized = normalizeStoredEvents(doc.events);
+  if (!normalized.ok) return { ok: false, reason: `stored ledger refused: ${normalized.reason}`, raw };
   try {
-    const events = doc.events.map(normalizeStoredEvent);
-    const ledger = Ledger.fromEvents(mode, events, { ...options, startingEquityMils: mils(doc.startingEquityMils as number) });
+    const ledger = Ledger.fromEvents(mode, normalized.events, { ...options, startingEquityMils: mils(doc.startingEquityMils as number) });
     return { ok: true, ledger, source: "stored" };
   } catch (err) {
     const message = err instanceof LedgerError ? err.message : err instanceof Error ? `${err.name}: ${err.message}` : String(err);
@@ -111,7 +112,8 @@ const KNOWN_TYPES = new Set<string>([
 /** Per-type required fields (beyond id/type/timestamp/actual). */
 const REQUIRED_FIELDS: Record<string, string[]> = {
   CAMPAIGN_QUEUED: ["campaignId", "mode", "root", "contract", "side", "plan", "frozenConfig", "frozenSnapshot", "decisionDistance"],
-  ENTRY_FILL: ["campaignId", "side", "quantity", "price", "feesMils", "filledAt", "fillModel", "perContractRiskMils"],
+  // side is tolerated when absent (see normalizeStoredEvents): supplied from the campaign's planned side.
+  ENTRY_FILL: ["campaignId", "quantity", "price", "feesMils", "filledAt", "fillModel", "perContractRiskMils"],
   EXIT_FILL: ["campaignId", "quantity", "price", "feesMils", "filledAt", "fillModel", "reason"],
   STOP_SET: ["campaignId", "kind", "stop"],
   BROKER_STOP_RECORDED: ["campaignId", "status", "confirmedAt"],
@@ -133,9 +135,32 @@ const REQUIRED_FIELDS: Record<string, string[]> = {
  */
 export function normalizeStoredEvent(e: LedgerEvent): LedgerEvent {
   if (e.type === "MARK" && (e as { completedClose?: unknown }).completedClose === undefined) {
-    return { ...e, completedClose: false };
+    // The paper engine's bar-close marks were always completed closes; anything else is unknown => false.
+    return { ...e, completedClose: e.source === "paper-observation-bar" };
   }
   return e;
+}
+
+/**
+ * Tolerant read, not a migration (second rule): an ENTRY_FILL stored without `side` (written before the
+ * field existed) takes the side of its campaign's CAMPAIGN_QUEUED event — old fills always matched the
+ * plan. Refused by name when that queued event is absent. The stored document is not rewritten.
+ */
+export function normalizeStoredEvents(events: readonly LedgerEvent[]): { ok: true; events: LedgerEvent[] } | { ok: false; reason: string } {
+  const plannedSide = new Map<string, 1 | -1>();
+  for (const e of events) if (e.type === "CAMPAIGN_QUEUED") plannedSide.set(e.campaignId, e.side);
+  const out: LedgerEvent[] = [];
+  for (const raw of events) {
+    const e = normalizeStoredEvent(raw);
+    if (e.type === "ENTRY_FILL" && (e as { side?: unknown }).side === undefined) {
+      const side = plannedSide.get(e.campaignId);
+      if (side === undefined) return { ok: false, reason: `event ${e.id} (ENTRY_FILL) has no side and no CAMPAIGN_QUEUED event for campaign ${e.campaignId}` };
+      out.push({ ...e, side });
+      continue;
+    }
+    out.push(e);
+  }
+  return { ok: true, events: out };
 }
 
 /** Structural check of one stored event; returns a reason naming the event, or null. */
@@ -151,6 +176,18 @@ export function validateEventShape(e: unknown, index: number): string | null {
   if (!KNOWN_TYPES.has(o.type)) return `${name} has unknown event type ${o.type}`;
   for (const f of REQUIRED_FIELDS[o.type] ?? []) {
     if (!(f in o) || o[f] === undefined) return `${name} (${o.type}) is missing required field ${f}`;
+  }
+  if (o.type === "CAMPAIGN_QUEUED") {
+    const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
+    const cfg = o.frozenConfig;
+    const snap = o.frozenSnapshot;
+    const plan = o.plan;
+    const dist = o.decisionDistance;
+    if (!isObj(cfg) || typeof cfg.version !== "string") return `${name} (CAMPAIGN_QUEUED) frozenConfig.version must be a string`;
+    if (!isObj(cfg.costs) || !isObj(cfg.costs[String(o.root)])) return `${name} (CAMPAIGN_QUEUED) frozenConfig.costs must contain root ${String(o.root)}`;
+    if (!isObj(snap) || typeof snap.root !== "string") return `${name} (CAMPAIGN_QUEUED) frozenSnapshot.root must be a string`;
+    if (!isObj(plan) || !Number.isInteger(plan.contracts)) return `${name} (CAMPAIGN_QUEUED) plan.contracts must be an integer`;
+    if (!isObj(dist) || typeof dist.dTicks !== "number" || !Number.isFinite(dist.dTicks)) return `${name} (CAMPAIGN_QUEUED) decisionDistance.dTicks must be a number`;
   }
   return null;
 }

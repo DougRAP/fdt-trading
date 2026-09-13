@@ -307,9 +307,12 @@ function ManualOpenActions({ c, snapshot }: { c: Campaign; snapshot: SignalSnaps
   const [brokerStatus, setBrokerStatus] = useState<BrokerStopStatus>("working");
   const [error, setError] = useState<string | null>(null);
 
-  function guard(fn: () => string | null) {
+  /** Runs a write; on success clears the form via onSuccess so a second click cannot re-submit the same input. */
+  function guard(fn: () => string | null, onSuccess?: () => void) {
     try {
-      setError(fn());
+      const err = fn();
+      setError(err);
+      if (!err) onSuccess?.();
     } catch (e) {
       setError(e instanceof LedgerError || e instanceof NumericError ? e.message : String(e));
     }
@@ -329,13 +332,21 @@ function ManualOpenActions({ c, snapshot }: { c: Campaign; snapshot: SignalSnaps
           <button
             type="button"
             className="cp-main"
+            disabled={exitPrice.trim() === "" || exitQty.trim() === ""}
             onClick={() =>
-              guard(() => {
-                const filledAt = toIso(exitTime);
-                return actions.append("manual", [
-                  recordExitFill({ id: newEventId(`${c.id}:exit`), campaignId: c.id, price: toTicks(exitPrice.trim(), inst.tick, "exact"), quantity: Number(exitQty), filledAt, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, feesMils: dollarsToMils(exitFees.trim() || "0"), deviationReason: exitDeviation.trim() || undefined, recordedAt: new Date().toISOString() }),
-                ]);
-              })
+              guard(
+                () => {
+                  const filledAt = toIso(exitTime);
+                  return actions.append("manual", [
+                    recordExitFill({ id: newEventId(`${c.id}:exit`), campaignId: c.id, price: toTicks(exitPrice.trim(), inst.tick, "exact"), quantity: Number(exitQty), filledAt, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, feesMils: dollarsToMils(exitFees.trim() || "0"), deviationReason: exitDeviation.trim() || undefined, recordedAt: new Date().toISOString() }),
+                  ]);
+                },
+                () => {
+                  setExitPrice("");
+                  setExitDeviation("");
+                  setExitFees("0");
+                },
+              )
             }
           >
             Record exit fill
@@ -349,11 +360,15 @@ function ManualOpenActions({ c, snapshot }: { c: Campaign; snapshot: SignalSnaps
           <span>&nbsp;</span>
           <button
             type="button"
+            disabled={markPrice.trim() === ""}
             onClick={() =>
-              guard(() => {
-                const observedAt = toIso(markTime);
-                return actions.append("manual", [recordMark({ id: newEventId(`${c.id}:mark`), root: c.root, price: toTicks(markPrice.trim(), inst.tick, "exact"), observedAt, source: "manual-entered" })]);
-              })
+              guard(
+                () => {
+                  const observedAt = toIso(markTime);
+                  return actions.append("manual", [recordMark({ id: newEventId(`${c.id}:mark`), root: c.root, price: toTicks(markPrice.trim(), inst.tick, "exact"), observedAt, source: "manual-entered" })]);
+                },
+                () => setMarkPrice(""),
+              )
             }
             title="A mark updates P&L and equity only; it never moves the trailing-stop reference."
           >
@@ -366,13 +381,17 @@ function ManualOpenActions({ c, snapshot }: { c: Campaign; snapshot: SignalSnaps
           <span>&nbsp;</span>
           <button
             type="button"
+            disabled={closePrice.trim() === ""}
             onClick={() =>
-              guard(() => {
-                const barEnd = toIso(closeTime);
-                const err = actions.append("manual", [recordCompletedClose({ id: newEventId(`${c.id}:close`), root: c.root, price: toTicks(closePrice.trim(), inst.tick, "exact"), barEnd })]);
-                if (!err) actions.setNotice("Completed close recorded. Recalculate the proposed stop to apply it; only completed closes move the ratchet reference.");
-                return err;
-              })
+              guard(
+                () => {
+                  const barEnd = toIso(closeTime);
+                  const err = actions.append("manual", [recordCompletedClose({ id: newEventId(`${c.id}:close`), root: c.root, price: toTicks(closePrice.trim(), inst.tick, "exact"), barEnd })]);
+                  if (!err) actions.setNotice("Completed close recorded. Recalculate the proposed stop to apply it; only completed closes move the ratchet reference.");
+                  return err;
+                },
+                () => setClosePrice(""),
+              )
             }
             title="Only a completed bar close advances the highest/lowest close used by the trailing stop."
           >
@@ -416,11 +435,15 @@ function ManualOpenActions({ c, snapshot }: { c: Campaign; snapshot: SignalSnaps
           <span>&nbsp;</span>
           <button
             type="button"
+            disabled={brokerPrice.trim() === "" && brokerStatus === "working"}
             onClick={() =>
-              guard(() => {
-                const at = new Date().toISOString();
-                return actions.append("manual", [recordBrokerStop({ id: newEventId(`${c.id}:broker`), campaignId: c.id, price: brokerPrice.trim() ? toTicks(brokerPrice.trim(), inst.tick, "exact") : null, status: brokerStatus, confirmedAt: at, recordedAt: at })]);
-              })
+              guard(
+                () => {
+                  const at = new Date().toISOString();
+                  return actions.append("manual", [recordBrokerStop({ id: newEventId(`${c.id}:broker`), campaignId: c.id, price: brokerPrice.trim() ? toTicks(brokerPrice.trim(), inst.tick, "exact") : null, status: brokerStatus, confirmedAt: at, recordedAt: at })]);
+                },
+                () => setBrokerPrice(""),
+              )
             }
           >
             Record broker stop
@@ -445,13 +468,20 @@ function PaperTicket({ snapshot, active }: { snapshot: SignalSnapshot | null; ac
 
   function start() {
     const o = actions.paperStart();
+    if (!o) {
+      actions.setNotice("Paper engine error; see the banner above. Nothing was queued.");
+      return;
+    }
+    const skippedText = (list: { root: string; reason: string }[]) => list.map((s) => `${s.root}: ${s.reason}`).join("; ");
     actions.setNotice(
       o.kind === "queued"
-        ? `Paper engine queued ${o.root} (${o.contracts} contracts) as PENDING. Fill occurs on the next synthetic demo bar.`
+        ? `Paper engine queued ${o.root} (${o.contracts} contracts) as PENDING. Fill occurs on the next synthetic demo bar.${o.skipped.length ? ` Skipped before it: ${skippedText(o.skipped)}.` : ""}`
         : o.kind === "no-qualifying"
           ? "No qualifying trade. The engine queued nothing."
           : o.kind === "skip"
-            ? `Skipped ${o.root}: ${o.reason}`
+            ? o.skipped.length
+              ? `Nothing queued. Skipped: ${skippedText(o.skipped)}.`
+              : `Nothing queued: ${o.reason}.`
             : o.kind === "paused"
               ? "Paper engine is paused; no new entries."
               : "A paper position is already active.",
@@ -490,7 +520,7 @@ function PaperTicket({ snapshot, active }: { snapshot: SignalSnapshot | null; ac
               <div className="cp-field">Side<span className="cp-v">{sideText(active.side)}</span></div>
               <div className="cp-field">Contracts<span className="cp-v">{active.plan.contracts}</span></div>
               <div className="cp-field">Planned entry / stop<span className="cp-v">{fmtPrice(active.plan.plannedEntry, active.root)} / {fmtPrice(active.plan.plannedStop, active.root)}</span></div>
-              <div className="cp-field">Budget<span className="cp-v">{fmtMoney(active.plan.riskBudgetMils)} ({fmtPct(state.cfg.riskBudgetPct, 2)})</span></div>
+              <div className="cp-field">Budget<span className="cp-v">{fmtMoney(active.plan.riskBudgetMils)} ({fmtPct(active.frozenConfig.riskBudgetPct, 2)} of equity at decision)</span></div>
               <div className="cp-field">Per-contract risk<span className="cp-v">{fmtMoney(active.plan.perContractRisk.totalMils)}</span></div>
               <div className="cp-field">Planned loss<span className="cp-v">{fmtMoney(active.plan.sizing.plannedLossMils)} · {fmtPct(active.plan.sizing.plannedLossPctOfEquity)} of equity</span></div>
               <div className="cp-field">Frozen config<span className="cp-v">v{active.frozenConfig.version}</span></div>

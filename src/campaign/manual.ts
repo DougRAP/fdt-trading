@@ -104,6 +104,7 @@ export function recordEntryFill(input: ManualEntryInput): LedgerEvent[] {
     actual: true,
     campaignId: input.campaignId,
     side: input.side,
+    decisionDistance: input.side !== planned.side ? dist.value : undefined,
     quantity: fill.quantity,
     price: fill.price,
     feesMils: fill.feesMils,

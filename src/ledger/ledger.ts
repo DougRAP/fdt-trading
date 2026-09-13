@@ -36,7 +36,14 @@ export class Ledger {
   static fromEvents(mode: Mode, events: readonly LedgerEvent[], options: LedgerOptions = {}): Ledger {
     const ledger = new Ledger(mode, options);
     for (const e of events) {
-      const r = ledger.append(e);
+      let r: AppendResult;
+      try {
+        r = ledger.append(e);
+      } catch (err) {
+        // Any failure while applying a stored event is reported by event id, whatever its type.
+        const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+        throw new LedgerError(`event ${String((e as { id?: unknown }).id)}: ${message}`);
+      }
       if (!r.applied && r.reason !== "duplicate") throw new LedgerError(`event ${e.id}: ${r.reason}`);
     }
     return ledger;
@@ -124,19 +131,21 @@ export interface Drawdown {
  * scan because they carry unrealized 0 silently.
  */
 export function maxDrawdown(series: readonly AccountEquityPoint[], startingEquityMils: Mils): Drawdown | null {
+  // Scan starts at the first point that has an account equity base (starting equity + cumulative
+  // external cash flow > 0); earlier points have no base to measure against.
   let cumulativeFlow = 0;
-  const scanned: { point: AccountEquityPoint; base: number }[] = [];
+  const scanned: AccountEquityPoint[] = [];
   for (const p of series) {
     cumulativeFlow += p.externalCashFlowMils;
     if (p.freshness === "no-mark") continue;
-    scanned.push({ point: p, base: startingEquityMils + cumulativeFlow });
+    if (scanned.length === 0 && startingEquityMils + cumulativeFlow <= 0) continue;
+    scanned.push(p);
   }
   if (scanned.length < 2) return null;
-  if (scanned[0]!.base <= 0) return null;
   let peak: number | null = null;
-  const first = scanned[0]!.point;
+  const first = scanned[0]!;
   let best: Drawdown = { value: 0, peakMils: first.equityMils, troughMils: first.equityMils, at: first.timestamp, points: scanned.length };
-  for (const { point: p } of scanned) {
+  for (const p of scanned) {
     if (peak === null) peak = p.equityMils;
     else peak = Math.max(peak + p.externalCashFlowMils, p.equityMils);
     if (peak <= 0) continue;

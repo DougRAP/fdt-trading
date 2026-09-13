@@ -54,6 +54,8 @@ export interface EntryFillEvent extends EventBase {
   campaignId: string;
   /** Filled side. If it differs from the planned side on the first fill, the campaign takes this side (a recorded deviation). */
   side: Side;
+  /** Present when side differs from the plan: the decision snapshot's D for the filled side; replaces the campaign's decisionDistance. */
+  decisionDistance?: StopDistance;
   quantity: number;
   price: Ticks;
   feesMils: Mils;

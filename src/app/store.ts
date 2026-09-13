@@ -110,6 +110,8 @@ export interface AppState {
   ledgers: Record<Mode, Ledger>;
   loadErrors: Record<Mode, string | null>;
   configError: string | null;
+  /** Last error thrown by the paper engine on a user action; shown in the banner, never thrown into render. */
+  engineError: string | null;
   selectedRoot: InstrumentRoot | null;
   drawer: DrawerId;
   demo: DemoProgress;
@@ -126,7 +128,8 @@ export interface AppActions {
   /** Append events to a ledger, persist, and return the first refusal reason if any. A duplicate id on a user write is an error. */
   append(mode: Mode, events: LedgerEvent[]): string | null;
   saveSettings(overrides: ConfigOverrides): void;
-  paperStart(): DecisionOutcome;
+  /** Null when the engine threw; the message is in state.engineError. */
+  paperStart(): DecisionOutcome | null;
   paperStep(): ObservationOutcome | null;
   paperPause(): void;
   paperResume(): void;
@@ -159,6 +162,7 @@ function initialState(storage: StorageLike): AppState {
     ledgers,
     loadErrors: { manual: manual.ok ? null : manual.reason, paper: paper.ok ? null : paper.reason },
     configError: config.error,
+    engineError: null,
     selectedRoot: ledgers.manual.activeCampaign?.root ?? topQualified?.root ?? null,
     drawer: null,
     demo: { campaignId: null, next: 0, total: 0 },
@@ -224,11 +228,16 @@ export function useAppStore(storage: StorageLike): AppStore {
       },
       paperStart() {
         const ledger = ref.current.ledgers.paper;
-        const outcome = onDecisionBar(ledger, ref.current.snapshots, ledger.equityMils, ref.current.cfg);
-        persist("paper");
-        const demo = outcome.kind === "queued" ? { campaignId: outcome.campaignId, next: 0, total: 0 } : ref.current.demo;
-        bump({ demo: { ...demo, total: 0 }, selectedRoot: outcome.kind === "queued" ? outcome.root : ref.current.selectedRoot });
-        return outcome;
+        try {
+          const outcome = onDecisionBar(ledger, ref.current.snapshots, ledger.equityMils, ref.current.cfg);
+          persist("paper");
+          const demo = outcome.kind === "queued" ? { campaignId: outcome.campaignId, next: 0, total: 0 } : ref.current.demo;
+          bump({ demo: { ...demo, total: 0 }, selectedRoot: outcome.kind === "queued" ? outcome.root : ref.current.selectedRoot, engineError: null });
+          return outcome;
+        } catch (err) {
+          bump({ engineError: `Paper engine error on start: ${err instanceof Error ? err.message : String(err)}` });
+          return null;
+        }
       },
       paperStep() {
         const ledger = ref.current.ledgers.paper;
@@ -241,10 +250,15 @@ export function useAppStore(storage: StorageLike): AppStore {
         const bar = bars[progress.next];
         if (!bar) return null;
         const trail = demoTrailInputs(snap);
-        const out = progress.next === 0 ? onExecutableBar(ledger, bar, trail, ref.current.cfg) : onObservationBar(ledger, bar, trail, ref.current.cfg);
-        persist("paper");
-        bump({ demo: { campaignId: c.id, next: progress.next + 1, total: bars.length } });
-        return out;
+        try {
+          const out = progress.next === 0 ? onExecutableBar(ledger, bar, trail, ref.current.cfg) : onObservationBar(ledger, bar, trail, ref.current.cfg);
+          persist("paper");
+          bump({ demo: { campaignId: c.id, next: progress.next + 1, total: bars.length }, engineError: null });
+          return out;
+        } catch (err) {
+          bump({ engineError: `Paper engine error on step: ${err instanceof Error ? err.message : String(err)}` });
+          return null;
+        }
       },
       paperPause() {
         enginePause(ref.current.ledgers.paper, new Date().toISOString());
