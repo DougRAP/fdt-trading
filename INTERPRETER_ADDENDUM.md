@@ -98,10 +98,10 @@ The model does not retrain. "Learning" is implemented as a bounded, auditable fe
 - **Audit.** Lessons and digests are shown in the Journal drawer and in a "Model memory" panel, with the prompt version and model id that produced them. A "Reset model memory" action archives (never deletes) the current lessons and starts a new memory epoch, recorded as an event.
 - **Evaluation.** Model-assisted results are compared with and without the feedback loop (memory epoch on/off) on identical sequences, so the loop's contribution is measured, not assumed.
 
-## Model defaults (user, 2026-09-13)
+## Model defaults (user, 2026-09-13, revised for cost)
 
-- Decision interpreter and observation monitor: `claude-fable-5-1` (Anthropic's most capable generally available model), thinking always on, `output_config.effort` "high" for observations and "xhigh" for decision bars; server-side refusal fallbacks enabled (`fallbacks: "default"`); structured outputs for the JSON contract (no forced tool choice, no prefill on this model family).
-- Comparison candidates for the evaluation phase: `claude-opus-5`, `claude-sonnet-5`. Model id, effort, and prompt version are config, frozen per campaign.
+- Decision interpreter and observation monitor: `claude-opus-5`, adaptive thinking (on by default), `output_config.effort` "high"; structured outputs for the JSON contract; no prefill, no forced tool choice.
+- Evaluation comparison candidate: `claude-sonnet-5` (same feature set, about 40% of the cost). `claude-fable-5-1` only if evaluation shows Opus 5 missing something (about 2x Opus cost; requires 30-day data retention on the org).
 - Not used: Haiku 4.5 (no adaptive thinking, no effort control).
-- Requires 30-day data retention on the Anthropic org (Fable 5.1 is not served under zero-data-retention without authorization).
-- Cost order of magnitude at daily cadence: roughly 0.30 USD per decision bar and 0.10 USD per observation tick at Fable 5.1 rates, before prompt-cache savings on the stable prefix.
+- Model id, effort, and prompt version are config, frozen per campaign.
+- Cost order of magnitude at daily cadence, before prompt-cache savings: Opus 5 about 0.15 USD per decision bar and 0.05 per observation tick (about 4.50 USD/month); Sonnet 5 about 0.06 / 0.02 (about 1.80 USD/month). Intraday cadence multiplies these by the bar count, which is the real reason to keep the model configurable.
