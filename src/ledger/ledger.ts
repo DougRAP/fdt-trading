@@ -29,7 +29,10 @@ export class Ledger {
   constructor(mode: Mode, options: LedgerOptions = {}) {
     const cfg = options.cfg ?? modelConfig;
     this.mode = mode;
-    this.startingEquityMils = options.startingEquityMils ?? (mode === "paper" ? cfg.paperEquityStartMils : mils(0));
+    // Both paper ledgers start from the same equity so the rules-only control and the
+    // model-assisted ledger stay comparable over the same sequence.
+    const paperMode = mode === "paper" || mode === "paperModel";
+    this.startingEquityMils = options.startingEquityMils ?? (paperMode ? cfg.paperEquityStartMils : mils(0));
   }
 
   /** Rebuild from a stored log; throws LedgerError if any event is invalid. */

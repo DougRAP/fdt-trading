@@ -237,6 +237,7 @@ function buildBounds(
     reason: entriesPermitted
       ? `entries permitted; candidates: ${candidates.join(", ")}`
       : `entries not permitted: ${blockers.join("; ")}`,
+    paused: ledger.paused,
     candidatePolicy: { mayEnterBelowThreshold: interp.mayEnterBelowThreshold, candidateFloor: interp.candidateFloor },
   };
 }

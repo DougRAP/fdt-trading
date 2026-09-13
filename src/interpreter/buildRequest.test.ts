@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Campaign, LedgerState } from "../campaign/types";
+import { INITIAL_MEMORY_EPOCH, type Campaign, type LedgerState } from "../campaign/types";
 import { modelConfig, type InstrumentRoot } from "../config/modelConfig";
 import { fixtureSnapshots } from "../fixtures/snapshots";
 import type { SignalSnapshot } from "../formula/types";
@@ -47,6 +47,15 @@ function ledgerState(over: Partial<LedgerState> = {}): LedgerState {
     equitySeries: [],
     appliedEventIds: [],
     supersededEventIds: [],
+    interpreter: {
+      latestResponseByBar: {},
+      latestResponse: null,
+      lessons: [],
+      digest: null,
+      memoryEpochId: INITIAL_MEMORY_EPOCH,
+      archivedEpochIds: [],
+      usage: { calls: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, costEstimateMils: mils(0), latencyMsTotal: 0 },
+    },
     ...over,
   };
 }
@@ -93,6 +102,7 @@ function openCampaign(): Campaign {
     openedAt: "2026-02-13T21:00:00Z",
     closedAt: null,
     cancelReason: null,
+    interpreterResponseId: null,
   };
 }
 

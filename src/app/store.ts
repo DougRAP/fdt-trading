@@ -149,9 +149,11 @@ function initialState(storage: StorageLike): AppState {
   const snapshots = fixtureSnapshots(config.cfg);
   const manual = loadLedger(storage, "manual", { cfg: config.cfg });
   const paper = loadLedger(storage, "paper", { cfg: config.cfg });
+  const paperModel = loadLedger(storage, "paperModel", { cfg: config.cfg });
   const ledgers: Record<Mode, Ledger> = {
     manual: manual.ok ? manual.ledger : new Ledger("manual", { cfg: config.cfg }),
     paper: paper.ok ? paper.ledger : new Ledger("paper", { cfg: config.cfg }),
+    paperModel: paperModel.ok ? paperModel.ledger : new Ledger("paperModel", { cfg: config.cfg }),
   };
   const topQualified = snapshots.find((s) => s.status === "QUALIFIED") ?? null;
   return {
@@ -160,7 +162,7 @@ function initialState(storage: StorageLike): AppState {
     cfg: config.cfg,
     configLabel: config.label,
     ledgers,
-    loadErrors: { manual: manual.ok ? null : manual.reason, paper: paper.ok ? null : paper.reason },
+    loadErrors: { manual: manual.ok ? null : manual.reason, paper: paper.ok ? null : paper.reason, paperModel: paperModel.ok ? null : paperModel.reason },
     configError: config.error,
     engineError: null,
     selectedRoot: ledgers.manual.activeCampaign?.root ?? topQualified?.root ?? null,

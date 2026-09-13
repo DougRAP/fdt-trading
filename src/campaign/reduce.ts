@@ -12,10 +12,15 @@ import type {
   CampaignQueuedEvent,
   EntryFillEvent,
   ExitFillEvent,
+  InterpreterDigestEvent,
+  InterpreterLessonEvent,
+  InterpreterMemoryResetEvent,
+  InterpreterResponseEvent,
   LedgerEvent,
   LedgerState,
   Mode,
 } from "./types";
+import { INITIAL_MEMORY_EPOCH } from "./types";
 
 export class LedgerError extends Error {
   override readonly name = "LedgerError";
@@ -37,6 +42,15 @@ export function initialState(mode: Mode, startingEquityMils: Mils): LedgerState 
     equitySeries: [],
     appliedEventIds: [],
     supersededEventIds: [],
+    interpreter: {
+      latestResponseByBar: {},
+      latestResponse: null,
+      lessons: [],
+      digest: null,
+      memoryEpochId: INITIAL_MEMORY_EPOCH,
+      archivedEpochIds: [],
+      usage: { calls: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, costEstimateMils: mils(0), latencyMsTotal: 0 },
+    },
   };
 }
 
@@ -130,6 +144,7 @@ function applyQueued(state: LedgerState, e: CampaignQueuedEvent): void {
     openedAt: null,
     closedAt: null,
     cancelReason: null,
+    interpreterResponseId: e.interpreterResponseId ?? null,
   };
   state.campaigns[c.id] = c;
   state.campaignOrder.push(c.id);
@@ -237,6 +252,79 @@ function applyExitFill(state: LedgerState, e: ExitFillEvent): void {
   pushEquityPoint(state, e.filledAt, mils(0));
 }
 
+/**
+ * Interpreter events are audit records. They never change campaign state, never move money and are
+ * accepted in every mode (manual "Ask model" records them too). The only campaign field they touch
+ * is `interpreterResponseId`, set on CAMPAIGN_QUEUED when a proposal originated the campaign.
+ */
+function applyInterpreterResponse(state: LedgerState, e: InterpreterResponseEvent): void {
+  if (!Number.isSafeInteger(e.costEstimateMils) || e.costEstimateMils < 0) {
+    throw new LedgerError("interpreter cost estimate must be zero or more");
+  }
+  const stored = {
+    eventId: e.id,
+    responseId: e.responseId,
+    barEnd: e.barEnd,
+    callKind: e.callKind,
+    model: e.model,
+    promptVersion: e.promptVersion,
+    response: e.response,
+    usage: e.usage,
+    latencyMs: e.latencyMs,
+    costEstimateMils: e.costEstimateMils,
+    at: e.timestamp,
+  };
+  const i = state.interpreter;
+  i.latestResponseByBar[`${e.callKind}:${e.barEnd}`] = stored;
+  i.latestResponse = stored;
+  i.usage = {
+    calls: i.usage.calls + 1,
+    inputTokens: i.usage.inputTokens + e.usage.inputTokens,
+    cachedInputTokens: i.usage.cachedInputTokens + e.usage.cachedInputTokens,
+    outputTokens: i.usage.outputTokens + e.usage.outputTokens,
+    costEstimateMils: addMils(i.usage.costEstimateMils, e.costEstimateMils),
+    latencyMsTotal: i.usage.latencyMsTotal + e.latencyMs,
+  };
+}
+
+function applyLesson(state: LedgerState, e: InterpreterLessonEvent): void {
+  // Lessons from archived epochs stay in the log but are not read back into requests.
+  if (e.epochId !== state.interpreter.memoryEpochId) return;
+  state.interpreter.lessons.push({
+    eventId: e.id,
+    campaignId: e.campaignId,
+    epochId: e.epochId,
+    model: e.model,
+    promptVersion: e.promptVersion,
+    lesson: e.lesson,
+    at: e.timestamp,
+  });
+}
+
+function applyDigest(state: LedgerState, e: InterpreterDigestEvent): void {
+  if (e.epochId !== state.interpreter.memoryEpochId) return;
+  state.interpreter.digest = {
+    eventId: e.id,
+    epochId: e.epochId,
+    model: e.model,
+    promptVersion: e.promptVersion,
+    digest: e.digest,
+    at: e.timestamp,
+  };
+}
+
+function applyMemoryReset(state: LedgerState, e: InterpreterMemoryResetEvent): void {
+  const i = state.interpreter;
+  if (e.previousEpochId !== i.memoryEpochId) {
+    throw new LedgerError(`memory reset expects the current epoch ${i.memoryEpochId}, got ${e.previousEpochId}`);
+  }
+  if (e.epochId === i.memoryEpochId) throw new LedgerError("memory reset must start a new epoch id");
+  i.archivedEpochIds.push(i.memoryEpochId);
+  i.memoryEpochId = e.epochId;
+  i.lessons = [];
+  i.digest = null;
+}
+
 /** Apply one event in place. Throws LedgerError on invalid transitions. */
 export function applyEvent(state: LedgerState, e: LedgerEvent): void {
   switch (e.type) {
@@ -314,6 +402,23 @@ export function applyEvent(state: LedgerState, e: LedgerEvent): void {
     }
     case "STOP_MONITOR":
       state.stopMonitor = { healthy: e.healthy, lastCheckedAt: e.checkedAt, detail: e.detail };
+      break;
+    case "INTERPRETER_REQUEST":
+    case "INTERPRETER_REJECTED":
+    case "INTERPRETER_CLAMPED":
+      // Audit only: the request hash, the rejection reason and the clamp before/after live in the log.
+      break;
+    case "INTERPRETER_RESPONSE":
+      applyInterpreterResponse(state, e);
+      break;
+    case "INTERPRETER_LESSON":
+      applyLesson(state, e);
+      break;
+    case "INTERPRETER_DIGEST":
+      applyDigest(state, e);
+      break;
+    case "INTERPRETER_MEMORY_RESET":
+      applyMemoryReset(state, e);
       break;
     default: {
       const unknown = e as { type?: unknown };

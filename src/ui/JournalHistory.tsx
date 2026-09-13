@@ -38,6 +38,20 @@ function describe(e: LedgerEvent, root: (id: string) => InstrumentRoot): string 
       return `close required · ${e.reason}`;
     case "STOP_MONITOR":
       return `${e.healthy ? "healthy" : "unhealthy"} · ${e.detail}`;
+    case "INTERPRETER_REQUEST":
+      return `request ${e.requestHash} · ${e.callKind} · ${e.model} · ${e.promptVersion} · ${e.nBars} bars`;
+    case "INTERPRETER_RESPONSE":
+      return `response ${e.responseId} · ${e.response.proposal.action}${e.response.proposal.root ? ` ${e.response.proposal.root}` : ""} · evidence ${e.response.evidenceStrength} · ${e.model} · ${e.latencyMs} ms · cost estimate ${fmtMoney(e.costEstimateMils)}`;
+    case "INTERPRETER_REJECTED":
+      return `rejected · ${e.reason}`;
+    case "INTERPRETER_CLAMPED":
+      return `clamped ${e.before.action}${e.before.root ? ` ${e.before.root}` : ""} · ${e.after ? `executable ${e.after.action}` : "not executed"} · ${e.reasons.join("; ")}`;
+    case "INTERPRETER_LESSON":
+      return `lesson for ${e.campaignId} · epoch ${e.epochId} · ${e.model} · ${e.promptVersion}`;
+    case "INTERPRETER_DIGEST":
+      return `digest v${e.digest.version} covering ${e.digest.lessonsCovered} lessons · epoch ${e.epochId}`;
+    case "INTERPRETER_MEMORY_RESET":
+      return `memory reset · ${e.previousEpochId} archived, now ${e.epochId} · ${e.reason}`;
   }
 }
 

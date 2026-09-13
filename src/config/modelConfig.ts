@@ -3,6 +3,7 @@
  * Every campaign stores a frozen copy of the config it was entered under (D16).
  * The model is an unvalidated research hypothesis; nothing here is optimized.
  */
+import { DEFAULT_INTERPRETER_CONFIG, type InterpreterConfig } from "../interpreter/types";
 import type { Mils } from "../numerics/money";
 import { mils } from "../numerics/money";
 
@@ -64,6 +65,8 @@ export interface ModelConfig {
   /** Active signal interval. Only "daily" is supported. */
   interval: IntervalId;
   intervalOptions: readonly IntervalOption[];
+  /** Interpreter layer (D19). Frozen with the campaign like every other parameter. */
+  interpreter: InterpreterConfig;
 }
 
 const defaultCost: CostFixture = {
@@ -97,6 +100,7 @@ export const modelConfig: Readonly<ModelConfig> = Object.freeze({
       "Research parameter (unvalidated): warn when A < 0.10 because u = Q/A may be unstable. Not an exclusion threshold.",
   },
   interval: "daily",
+  interpreter: DEFAULT_INTERPRETER_CONFIG,
   intervalOptions: [
     { id: "daily", label: "Daily", enabled: true },
     {

@@ -5,12 +5,14 @@
  */
 import type { InstrumentRoot, ModelConfig } from "../config/modelConfig";
 import type { Side, SignalSnapshot } from "../formula/types";
+import type { CallKind, ClampedProposal, Digest, InterpreterResponse, InterpreterUsage, Lesson, ProposalAction } from "../interpreter/types";
 import type { Mils } from "../numerics/money";
 import type { Ticks } from "../numerics/ticks";
 import type { PerContractRisk, PositionSize } from "../sizing/sizing";
 import type { StopDistance, StopReason, StopState } from "../stops/stops";
 
-export type Mode = "manual" | "paper";
+/** Ledger modes (D18). `paper` is the rules-only control; `paperModel` is model-assisted. */
+export type Mode = "manual" | "paper" | "paperModel";
 export type CampaignState = "PENDING" | "OPEN" | "CLOSED" | "CANCELLED";
 export type FillModel = "actual-broker" | "paper-model-0.1";
 export type ExitReason = "stop-touched" | "gap-open" | "close-required" | "manual";
@@ -47,6 +49,8 @@ export interface CampaignQueuedEvent extends EventBase {
   frozenConfig: ModelConfig;
   frozenSnapshot: SignalSnapshot;
   decisionDistance: StopDistance;
+  /** Set when the campaign was entered on an interpreter proposal; stored on the campaign record. */
+  interpreterResponseId?: string;
 }
 
 export interface EntryFillEvent extends EventBase {
@@ -140,6 +144,101 @@ export interface StopMonitorEvent extends EventBase {
   detail: string;
 }
 
+/** Audit of a request that was sent; the request body itself is not stored, only its hash. */
+export interface InterpreterRequestEvent extends EventBase {
+  type: "INTERPRETER_REQUEST";
+  mode: Mode;
+  callKind: CallKind;
+  barEnd: string;
+  requestHash: string;
+  promptVersion: string;
+  model: string;
+  nBars: number;
+}
+
+export interface InterpreterResponseEvent extends EventBase {
+  type: "INTERPRETER_RESPONSE";
+  responseId: string;
+  barEnd: string;
+  callKind: CallKind;
+  model: string;
+  promptVersion: string;
+  /** The validated response, stored whole. */
+  response: InterpreterResponse;
+  usage: InterpreterUsage;
+  latencyMs: number;
+  /** Estimate from the config price table, never an invoice (D23). */
+  costEstimateMils: Mils;
+}
+
+export interface InterpreterRejectedEvent extends EventBase {
+  type: "INTERPRETER_REJECTED";
+  barEnd: string;
+  callKind: CallKind;
+  model: string;
+  promptVersion: string;
+  reason: string;
+  /** Raw payload kept for audit; never used for a decision. */
+  raw?: string;
+  usage?: InterpreterUsage;
+  latencyMs?: number;
+  costEstimateMils?: Mils;
+}
+
+/** What the model proposed, before the risk engine clamped it. */
+export interface ProposalRecord {
+  action: ProposalAction;
+  root: InstrumentRoot | null;
+  side: Side | null;
+  stopTicks: number | null;
+  entryZone: { lowTicks: number; highTicks: number } | null;
+}
+
+export interface InterpreterClampedEvent extends EventBase {
+  type: "INTERPRETER_CLAMPED";
+  responseId: string | null;
+  barEnd: string;
+  callKind: CallKind;
+  before: ProposalRecord;
+  /** Null when nothing was executable. */
+  after: ClampedProposal | null;
+  reasons: string[];
+}
+
+export interface InterpreterLessonEvent extends EventBase {
+  type: "INTERPRETER_LESSON";
+  campaignId: string;
+  epochId: string;
+  model: string;
+  promptVersion: string;
+  lesson: Lesson;
+}
+
+export interface InterpreterDigestEvent extends EventBase {
+  type: "INTERPRETER_DIGEST";
+  epochId: string;
+  model: string;
+  promptVersion: string;
+  digest: Digest;
+}
+
+/** Archives the current memory epoch and starts a new one; lessons stay in the log. */
+export interface InterpreterMemoryResetEvent extends EventBase {
+  type: "INTERPRETER_MEMORY_RESET";
+  epochId: string;
+  previousEpochId: string;
+  reason: string;
+}
+
+export type InterpreterEvent =
+  | InterpreterRequestEvent
+  | InterpreterResponseEvent
+  | InterpreterRejectedEvent
+  | InterpreterClampedEvent
+  | InterpreterLessonEvent
+  | InterpreterDigestEvent
+  | InterpreterMemoryResetEvent;
+
 export type LedgerEvent =
   | CampaignQueuedEvent
   | EntryFillEvent
@@ -152,7 +251,8 @@ export type LedgerEvent =
   | PaperResumedEvent
   | CampaignCancelledEvent
   | CloseRequestedEvent
-  | StopMonitorEvent;
+  | StopMonitorEvent
+  | InterpreterEvent;
 
 export type OrderEvent = EntryFillEvent | ExitFillEvent;
 
@@ -222,6 +322,8 @@ export interface Campaign {
   openedAt: string | null;
   closedAt: string | null;
   cancelReason: string | null;
+  /** Response the campaign was entered on, when a proposal originated it. */
+  interpreterResponseId: string | null;
 }
 
 export interface Mark {
@@ -250,6 +352,63 @@ export interface AccountEquityPoint {
   freshness: "marked" | "no-mark" | "flat";
 }
 
+export interface StoredInterpreterResponse {
+  eventId: string;
+  responseId: string;
+  barEnd: string;
+  callKind: CallKind;
+  model: string;
+  promptVersion: string;
+  response: InterpreterResponse;
+  usage: InterpreterUsage;
+  latencyMs: number;
+  costEstimateMils: Mils;
+  at: string;
+}
+
+export interface StoredLesson {
+  eventId: string;
+  campaignId: string;
+  epochId: string;
+  model: string;
+  promptVersion: string;
+  lesson: Lesson;
+  at: string;
+}
+
+export interface StoredDigest {
+  eventId: string;
+  epochId: string;
+  model: string;
+  promptVersion: string;
+  digest: Digest;
+  at: string;
+}
+
+export interface InterpreterUsageTotals {
+  calls: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  costEstimateMils: Mils;
+  latencyMsTotal: number;
+}
+
+/** Derived interpreter state. Lessons and the digest belong to the current memory epoch only. */
+export interface InterpreterLedgerState {
+  /** Latest validated response keyed by `<callKind>:<barEnd>`. */
+  latestResponseByBar: Record<string, StoredInterpreterResponse>;
+  latestResponse: StoredInterpreterResponse | null;
+  lessons: StoredLesson[];
+  digest: StoredDigest | null;
+  memoryEpochId: string;
+  /** Epochs a reset archived; their lessons stay in the event log. */
+  archivedEpochIds: string[];
+  usage: InterpreterUsageTotals;
+}
+
+export const INITIAL_MEMORY_EPOCH = "epoch-1";
+
 export interface LedgerState {
   mode: Mode;
   campaigns: Record<string, Campaign>;
@@ -266,4 +425,5 @@ export interface LedgerState {
   equitySeries: AccountEquityPoint[];
   appliedEventIds: string[];
   supersededEventIds: string[];
+  interpreter: InterpreterLedgerState;
 }

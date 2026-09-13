@@ -17,6 +17,9 @@ import type { Ticks } from "../numerics/ticks";
 /** Ledger modes (D18). `paper` is the rules-only control; `paperModel` is model-assisted. */
 export type InterpreterMode = "manual" | "paper" | "paperModel";
 
+/** Reasoning effort levels accepted by the provider. */
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
+
 /** Decision bars allow every action; observations allow hold / tighten / exit only (Decision 1). */
 export type CallKind = "decision" | "observation";
 
@@ -24,8 +27,8 @@ export type CallKind = "decision" | "observation";
 export interface InterpreterConfig {
   provider: "anthropic";
   model: string;
-  effortDecision: "low" | "medium" | "high";
-  effortObservation: "low" | "medium" | "high";
+  effortDecision: EffortLevel;
+  effortObservation: EffortLevel;
   promptVersion: string;
   /** Number of completed bars of history per market in a request. */
   nBars: number;
@@ -173,6 +176,8 @@ export interface RequestBounds {
   entriesPermitted: boolean;
   /** Why entries are or are not permitted, in plain words. */
   reason: string;
+  /** Engine gate the clamp re-checks for every discretionary action, not just entries. */
+  paused: boolean;
   /** Candidate policy in force, echoed for the audit trail. */
   candidatePolicy: { mayEnterBelowThreshold: boolean; candidateFloor: number | null };
 }
@@ -334,3 +339,88 @@ export interface Digest {
 // ---------------------------------------------------------------------------
 
 export type ValidationResult<T> = { ok: true; value: T } | { ok: false; reason: string };
+
+// ---------------------------------------------------------------------------
+// Usage, cost and clamped proposals
+// ---------------------------------------------------------------------------
+
+/** Token usage reported by the provider for one call (D23). */
+export interface InterpreterUsage {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+}
+
+export const ZERO_USAGE: Readonly<InterpreterUsage> = Object.freeze({ inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 });
+
+/** Price per million tokens in mils. An estimate: published list prices, not an invoice. */
+export interface ModelPrices {
+  inputPerMTokenMils: number;
+  cachedInputPerMTokenMils: number;
+  outputPerMTokenMils: number;
+}
+
+/**
+ * Estimate-only price table (D23). Labeled an estimate everywhere it is shown; it is not billing
+ * data and it is not part of the frozen model contract.
+ */
+export const INTERPRETER_PRICE_TABLE: Readonly<Record<string, ModelPrices>> = Object.freeze({
+  "claude-opus-5": { inputPerMTokenMils: 15_000_000, cachedInputPerMTokenMils: 1_500_000, outputPerMTokenMils: 75_000_000 },
+  "claude-sonnet-5": { inputPerMTokenMils: 3_000_000, cachedInputPerMTokenMils: 300_000, outputPerMTokenMils: 15_000_000 },
+  "claude-fable-5-1": { inputPerMTokenMils: 30_000_000, cachedInputPerMTokenMils: 3_000_000, outputPerMTokenMils: 150_000_000 },
+});
+
+export const COST_ESTIMATE_LABEL = "estimate";
+
+/**
+ * Estimated cost of one call in whole mils, rounded up so an estimate is never understated.
+ * Returns 0 for an unknown model id (the caller shows the estimate as unavailable).
+ */
+export function estimateCostMils(usage: InterpreterUsage, model: string, table: Record<string, ModelPrices> = INTERPRETER_PRICE_TABLE): number {
+  const prices = table[model];
+  if (!prices) return 0;
+  const total =
+    (usage.inputTokens * prices.inputPerMTokenMils +
+      usage.cachedInputTokens * prices.cachedInputPerMTokenMils +
+      usage.outputTokens * prices.outputPerMTokenMils) /
+    1_000_000;
+  return Number.isFinite(total) ? Math.ceil(total) : 0;
+}
+
+/**
+ * A proposal the risk engine has cleared for execution. The paper engine consumes this directly;
+ * everything the model asked for that could not be honoured is in `reasons` and in the
+ * INTERPRETER_CLAMPED event.
+ */
+export type ClampedProposal =
+  | {
+      action: "enter";
+      root: InstrumentRoot;
+      side: Side;
+      /** Reference price the stop was clamped against (the decision bar close). */
+      entryReferenceTicks: Ticks;
+      /** Stop after clamping into [reference - maxD, reference - minTick] (mirrored for shorts). */
+      stopTicks: Ticks;
+      /** What the model proposed before clamping. */
+      originalStopTicks: number;
+      reasons: string[];
+    }
+  | { action: "tighten"; root: InstrumentRoot; stopTicks: Ticks }
+  | { action: "exit"; root: InstrumentRoot };
+
+/**
+ * Ledger event id for every interpreter event:
+ * `interp:<mode>:<barEnd>:<callKind>:<model>:<promptVersion>:<suffix>`.
+ * Repeating a bar with the same model and prompt version produces the same id, so the ledger's
+ * duplicate-id rule makes the write idempotent.
+ */
+export function interpreterEventId(parts: {
+  mode: InterpreterMode;
+  barEnd: string;
+  callKind: CallKind;
+  model: string;
+  promptVersion: string;
+  suffix: string;
+}): string {
+  return `interp:${parts.mode}:${parts.barEnd}:${parts.callKind}:${parts.model}:${parts.promptVersion}:${parts.suffix}`;
+}

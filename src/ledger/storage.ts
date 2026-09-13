@@ -30,6 +30,7 @@ export const SCHEMA_VERSION = 1 as const;
 export const LEDGER_KEYS: Record<Mode, string> = {
   manual: "fdt.v1.manual",
   paper: "fdt.v1.paper",
+  paperModel: "fdt.v1.paperModel",
 };
 
 export interface StoredLedger {
@@ -107,6 +108,13 @@ const KNOWN_TYPES = new Set<string>([
   "CAMPAIGN_CANCELLED",
   "CLOSE_REQUESTED",
   "STOP_MONITOR",
+  "INTERPRETER_REQUEST",
+  "INTERPRETER_RESPONSE",
+  "INTERPRETER_REJECTED",
+  "INTERPRETER_CLAMPED",
+  "INTERPRETER_LESSON",
+  "INTERPRETER_DIGEST",
+  "INTERPRETER_MEMORY_RESET",
 ]);
 
 /** Per-type required fields (beyond id/type/timestamp/actual). */
@@ -125,6 +133,13 @@ const REQUIRED_FIELDS: Record<string, string[]> = {
   CAMPAIGN_CANCELLED: ["campaignId", "reason"],
   CLOSE_REQUESTED: ["campaignId", "reason"],
   STOP_MONITOR: ["healthy", "checkedAt", "detail"],
+  INTERPRETER_REQUEST: ["mode", "callKind", "barEnd", "requestHash", "promptVersion", "model", "nBars"],
+  INTERPRETER_RESPONSE: ["responseId", "barEnd", "callKind", "model", "promptVersion", "response", "usage", "latencyMs", "costEstimateMils"],
+  INTERPRETER_REJECTED: ["barEnd", "callKind", "model", "promptVersion", "reason"],
+  INTERPRETER_CLAMPED: ["responseId", "barEnd", "callKind", "before", "after", "reasons"],
+  INTERPRETER_LESSON: ["campaignId", "epochId", "model", "promptVersion", "lesson"],
+  INTERPRETER_DIGEST: ["epochId", "model", "promptVersion", "digest"],
+  INTERPRETER_MEMORY_RESET: ["epochId", "previousEpochId", "reason"],
 };
 
 /**
