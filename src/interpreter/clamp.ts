@@ -114,8 +114,12 @@ export function clampProposal(input: ClampInput): ClampResult {
   const position = request.position;
 
   if (proposal.action === "enter") {
-    if (request.callKind === "observation") {
-      reasons.push("entries are never proposed from an observation call");
+    if (request.callKind !== "decision") {
+      reasons.push(
+        request.callKind === "observation"
+          ? "entries are never proposed from an observation call"
+          : `entries are never proposed from a ${request.callKind} call`,
+      );
       return done(null, true);
     }
     if (!request.bounds.entriesPermitted) {
@@ -175,10 +179,6 @@ export function clampProposal(input: ClampInput): ClampResult {
   }
 
   // tighten and exit act on an open position only.
-  if (request.bounds.paused) {
-    reasons.push("the engine is paused; the proposal is logged, not executed");
-    return done(null, true);
-  }
   if (!position.hasPosition || position.root === null) {
     reasons.push(`${proposal.action} proposed with no open position`);
     return done(null, true);
@@ -195,10 +195,15 @@ export function clampProposal(input: ClampInput): ClampResult {
 
   if (proposal.action === "exit") {
     // An exit is a close request, never a fill: the engine exits at the next executable observation.
+    // Pausing stops new entries; it never blocks closing an open position.
     return done({ action: "exit", root: position.root }, false);
   }
 
-  // tighten
+  // tighten: a stop change is a new instruction, so the pause gate applies to it.
+  if (request.bounds.paused) {
+    reasons.push("the engine is paused; the stop change is logged, not applied (existing protective stops keep running)");
+    return done(null, true);
+  }
   const current = position.proposedStopTicks ?? position.recordedStopTicks;
   if (current === null) {
     reasons.push("tighten proposed with no current stop to move");

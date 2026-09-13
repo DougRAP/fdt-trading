@@ -32,6 +32,14 @@ export const MIN_STOP_TICKS = 1;
 
 const DECISION_ACTIONS: readonly ProposalAction[] = ["enter", "wait", "hold", "tighten", "exit"];
 const OBSERVATION_ACTIONS: readonly ProposalAction[] = ["hold", "tighten", "exit"];
+/** Memory calls produce a lesson or a digest, never a proposal. */
+const NO_ACTIONS: readonly ProposalAction[] = [];
+
+function actionsFor(callKind: CallKind): readonly ProposalAction[] {
+  if (callKind === "decision") return DECISION_ACTIONS;
+  if (callKind === "observation") return OBSERVATION_ACTIONS;
+  return NO_ACTIONS;
+}
 
 export interface BuildRequestInput {
   callKind: CallKind;
@@ -223,6 +231,7 @@ function buildBounds(
 
   const blockers: string[] = [];
   if (callKind === "observation") blockers.push("observation calls may only hold, tighten or exit");
+  else if (callKind !== "decision") blockers.push(`${callKind} calls produce memory notes, not proposals`);
   if (ledger.paused) blockers.push("the engine is paused");
   if (ledger.activeCampaignId !== null) blockers.push(`campaign ${ledger.activeCampaignId} is already active (one position per mode)`);
   if (available.length === 0) blockers.push("no market has a valid, fresh snapshot at this bar");
@@ -275,7 +284,7 @@ export function buildRequest(input: BuildRequestInput): InterpreterRequest {
     mode: input.mode,
     callKind: input.callKind,
     barEnd: input.barEnd ?? newestBarEnd ?? "",
-    allowedActions: [...(input.callKind === "decision" ? DECISION_ACTIONS : OBSERVATION_ACTIONS)],
+    allowedActions: [...actionsFor(input.callKind)],
     nBars,
     markets,
     position: positionView(input.mode, input.ledger, campaign, input.positionExtras),

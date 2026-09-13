@@ -303,9 +303,12 @@ describe("buildRequest — position, feedback and memory", () => {
       root: null,
       side: null,
       disposition: "not-executed",
+      rejectionReason: null,
+      clampReasons: [],
       fill: null,
       exitReason: null,
       realizedR: null,
+      realizedRText: "—",
       barsHeld: null,
       invalidation: [],
     }));

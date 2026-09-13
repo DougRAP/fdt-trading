@@ -20,8 +20,11 @@ export type InterpreterMode = "manual" | "paper" | "paperModel";
 /** Reasoning effort levels accepted by the provider. */
 export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
-/** Decision bars allow every action; observations allow hold / tighten / exit only (Decision 1). */
-export type CallKind = "decision" | "observation";
+/**
+ * Decision bars allow every action; observations allow hold / tighten / exit only (Decision 1).
+ * "lesson" and "digest" are memory calls: they carry no market bars and produce no proposal.
+ */
+export type CallKind = "decision" | "observation" | "lesson" | "digest";
 
 /** Interpreter block of modelConfig (D19). Frozen per campaign with the rest of the config. */
 export interface InterpreterConfig {
@@ -186,15 +189,59 @@ export interface RequestBounds {
 export interface ProposalOutcome {
   responseId: string;
   barEnd: string;
-  action: ProposalAction;
+  /** Null when the response was rejected before it could be read. */
+  action: ProposalAction | null;
   root: InstrumentRoot | null;
   side: Side | null;
   disposition: "executed" | "clamped" | "rejected" | "not-executed";
+  /** Why the response was rejected; null otherwise. */
+  rejectionReason: string | null;
+  /** What the risk engine changed or blocked, if anything. */
+  clampReasons: string[];
   fill: { priceTicks: Ticks | null; priceText: string; quantity: number } | null;
   exitReason: string | null;
   realizedR: number | null;
+  realizedRText: string;
   barsHeld: number | null;
   invalidation: InvalidationOutcome[];
+}
+
+/** Closed-campaign facts a lesson call reads. Computed from the ledger, never self-reported. */
+export interface CampaignSummary {
+  campaignId: string;
+  mode: InterpreterMode;
+  root: InstrumentRoot;
+  contract: string;
+  side: Side;
+  sideText: string;
+  state: string;
+  interpreterResponseId: string | null;
+  decisionBarEnd: string;
+  openedAt: string | null;
+  closedAt: string | null;
+  entryFills: { priceTicks: Ticks; priceText: string; quantity: number; at: string }[];
+  exitFills: { priceTicks: Ticks; priceText: string; quantity: number; at: string; reason: string }[];
+  exitReason: string | null;
+  plannedEntryTicks: Ticks;
+  plannedEntryText: string;
+  plannedStopTicks: Ticks;
+  plannedStopText: string;
+  finalStopTicks: Ticks | null;
+  finalStopText: string;
+  originalRiskMils: Mils | null;
+  originalRiskText: string;
+  netRealizedMils: Mils;
+  netRealizedText: string;
+  feesMils: Mils;
+  feesText: string;
+  realizedR: number | null;
+  realizedRText: string;
+  barsHeld: number;
+  deviationReasons: string[];
+  /** The proposal's own invalidation conditions, evaluated against what followed. */
+  invalidation: InvalidationOutcome[];
+  /** The reading and proposal the campaign was entered on, when there was one. */
+  proposal: Proposal | null;
 }
 
 /** D17: whether the named invalidation condition appeared before the stop did. */
@@ -226,6 +273,10 @@ export interface InterpreterRequest {
   digest: Digest | null;
   /** Memory epoch the lessons and digest belong to. */
   memoryEpochId: string | null;
+  /** Present on a "lesson" call: the closed campaign to write a lesson about. */
+  campaignSummary?: CampaignSummary | null;
+  /** Present on a "digest" call: the lessons to compact. */
+  lessonsToCompact?: Lesson[] | null;
   /** Fixture, replay, delayed or realtime; fixtures are labeled as such throughout. */
   dataSourceKind: string;
 }

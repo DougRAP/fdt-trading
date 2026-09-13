@@ -290,16 +290,29 @@ describe("clampProposal — tighten, exit, wait and hold", () => {
     expect(wrong.reasons).toEqual(["exit names ES but the open position is NQ"]);
   });
 
-  it("refuses a tighten or exit while the engine is paused", () => {
+  it("blocks a tighten while paused but still allows a discretionary exit", () => {
     const c = openCampaign();
     const paused = request({
       callKind: "observation",
       ledger: ledgerState({ campaigns: { [c.id]: c }, campaignOrder: [c.id], activeCampaignId: c.id, paused: true }),
     });
-    const r = clampProposal({ response: response({ action: "exit", root: "NQ", side: 1 }), request: paused });
-    expect(r.executable).toBeNull();
-    expect(r.reasons).toEqual(["the engine is paused; the proposal is logged, not executed"]);
-    expect(r.events).toHaveLength(1);
+    const tighten = clampProposal({ response: response({ action: "tighten", root: "NQ", side: 1, stopTicks: 87950 }), request: paused });
+    expect(tighten.executable).toBeNull();
+    expect(tighten.reasons).toEqual(["the engine is paused; the stop change is logged, not applied (existing protective stops keep running)"]);
+    expect(tighten.events).toHaveLength(1);
+
+    // Pausing stops new entries; closing an open position stays available.
+    const exit = clampProposal({ response: response({ action: "exit", root: "NQ", side: 1 }), request: paused });
+    expect(exit.executable).toEqual({ action: "exit", root: "NQ" });
+    expect(exit.events).toEqual([]);
+    expect(exit.reasons).toEqual([]);
+
+    // stale data still blocks the exit
+    const stale = request({ callKind: "observation", ledger: ledgerState({ campaigns: { [c.id]: c }, campaignOrder: [c.id], activeCampaignId: c.id }) });
+    stale.markets.find((m) => m.root === "NQ")!.bars[0]!.status = "UNAVAILABLE";
+    const blocked = clampProposal({ response: response({ action: "exit", root: "NQ", side: 1 }), request: stale });
+    expect(blocked.executable).toBeNull();
+    expect(blocked.reasons).toEqual(["NQ snapshot is unavailable; the proposal is logged, not executed"]);
   });
 
   it("turns exit into a close request, never a fill", () => {
