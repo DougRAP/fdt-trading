@@ -248,7 +248,8 @@ async function callInterpret(
   const mode = ledger.mode;
   let result: InterpreterCallResult;
   try {
-    result = await input.interpreter({ kind: "interpret", request, model, effort });
+    // The job id is the response event id: re-posting the same bar can never run the model twice.
+    result = await input.interpreter({ kind: "interpret", request, model, effort, jobId: idFor(mode, request, model, "response") });
   } catch (err) {
     const reason = `interpreter call threw: ${err instanceof Error ? err.message : String(err)}`;
     out.push(rejectedEvent(mode, request, model, reason));
@@ -554,7 +555,7 @@ export async function runMemory(ledger: Ledger, input: ModelEngineInput, campaig
     out.push(requestEvent(ledger.mode, request, model, request.nBars));
     let call: InterpreterCallResult;
     try {
-      call = await input.interpreter({ kind: "lesson", request, model, effort: cfg.interpreter.effortObservation });
+      call = await input.interpreter({ kind: "lesson", request, model, effort: cfg.interpreter.effortObservation, jobId: idFor(ledger.mode, request, model, `lesson:${campaign.id}`) });
     } catch (err) {
       out.push(rejectedEvent(ledger.mode, request, model, `lesson call threw: ${err instanceof Error ? err.message : String(err)}`));
       return result;
@@ -588,7 +589,7 @@ export async function runMemory(ledger: Ledger, input: ModelEngineInput, campaig
     out.push(requestEvent(ledger.mode, request, model, request.nBars));
     let call: InterpreterCallResult;
     try {
-      call = await input.interpreter({ kind: "digest", request, model, effort: cfg.interpreter.effortObservation });
+      call = await input.interpreter({ kind: "digest", request, model, effort: cfg.interpreter.effortObservation, jobId: idFor(ledger.mode, request, model, "digest") });
     } catch (err) {
       out.push(rejectedEvent(ledger.mode, request, model, `digest call threw: ${err instanceof Error ? err.message : String(err)}`, "rejected:digest"));
       return result;

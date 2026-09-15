@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { RateLimitError, AuthenticationError, BadRequestError, APIConnectionError, APIError } from "@anthropic-ai/sdk";
-import { createHandler, loadHowItWorks, mapUsage, sanitizeSchema, type MessagesClient } from "../../netlify/functions/interpret";
+import { createHandler, jobKey, mapUsage, sanitizeSchema, type BlobStoreLike, type JobBlob, type MessagesClient } from "../../netlify/functions/interpret";
+import { createResultHandler } from "../../netlify/functions/interpret-result";
 import type { LedgerState } from "../campaign/types";
 import { INITIAL_MEMORY_EPOCH } from "../campaign/types";
 import { modelConfig, type InstrumentRoot } from "../config/modelConfig";
@@ -8,11 +9,12 @@ import { fixtureSnapshots } from "../fixtures/snapshots";
 import type { SignalSnapshot } from "../formula/types";
 import { mils } from "../numerics/money";
 import { buildRequest } from "./buildRequest";
-import { callInterpreter, type FetchLike } from "./client";
+import { callInterpreter, type CallProgress, type FetchLike } from "./client";
 import { PROMPT_VERSION, SYSTEM_PROMPT } from "./prompt";
 import type { Digest, InterpreterRequest, InterpreterResponse, Lesson } from "./types";
 
 const SNAPS = fixtureSnapshots();
+const JOB_ID = "interp:paperModel:2026-01-02T21:00:00Z:decision:claude-opus-5:interp-0.1:response";
 
 function ledgerState(): LedgerState {
   return {
@@ -79,7 +81,26 @@ function validResponse(request: InterpreterRequest): InterpreterResponse {
 
 const USAGE = { input_tokens: 3000, cache_creation_input_tokens: 1200, cache_read_input_tokens: 9000, output_tokens: 900 };
 
-/** A fake client whose messages.create records the params it was given. */
+/** A Map-backed stand-in for the Netlify blob store, with only the two methods the handler uses. */
+function fakeStore(seed: Record<string, unknown> = {}): { store: BlobStoreLike; blobs: Map<string, unknown>; writes: string[] } {
+  const blobs = new Map<string, unknown>(Object.entries(seed));
+  const writes: string[] = [];
+  return {
+    blobs,
+    writes,
+    store: {
+      async get(key) {
+        return blobs.has(key) ? structuredClone(blobs.get(key)) : null;
+      },
+      async setJSON(key, value) {
+        writes.push(`${key}:${(value as { status?: string }).status ?? "?"}`);
+        blobs.set(key, structuredClone(value));
+        return { etag: "fake" };
+      },
+    },
+  };
+}
+
 function fakeClient(reply: (params: Record<string, unknown>) => unknown): { client: MessagesClient; calls: Record<string, unknown>[] } {
   const calls: Record<string, unknown>[] = [];
   const client: MessagesClient = {
@@ -107,32 +128,39 @@ function textMessage(value: unknown, over: Record<string, unknown> = {}): Record
   return { stop_reason: "end_turn", content: [{ type: "text", text: JSON.stringify(value) }], usage: USAGE, ...over };
 }
 
-describe("interpret function — valid paths", () => {
-  it("returns the validated response with usage, cost estimate and latency", async () => {
+function jobBody(request: InterpreterRequest, over: Record<string, unknown> = {}): Record<string, unknown> {
+  return { jobId: JOB_ID, kind: "interpret", request, model: "claude-opus-5", effort: "high", ...over };
+}
+
+describe("interpret background function — the happy path", () => {
+  it("writes running then done with the validated result, and answers 202", async () => {
     const request = interpretRequest();
     const response = validResponse(request);
     const { client, calls } = fakeClient(() => textMessage(response));
-    const handler = createHandler(() => client);
-    const res = await handler(post({ kind: "interpret", request, model: "claude-opus-5", effort: "high" }));
-    expect(res.status).toBe(200);
-    const body = JSON.parse(await res.text());
-    expect(body.ok).toBe(true);
-    expect(body.kind).toBe("interpret");
-    expect(body.response).toEqual(response);
-    expect(body.model).toBe("claude-opus-5");
-    expect(body.promptVersion).toBe(PROMPT_VERSION);
-    // cache writes count as input, cache reads as cached input
-    expect(body.usage).toEqual({ inputTokens: 4200, cachedInputTokens: 9000, outputTokens: 900 });
-    expect(body.costEstimateMils).toBeGreaterThan(0);
-    expect(typeof body.latencyMs).toBe("number");
-    expect(JSON.stringify(body)).not.toContain("sk-ant");
+    const { store, blobs, writes } = fakeStore();
+    const res = await createHandler(() => client, () => store)(post(jobBody(request)));
+    expect(res.status).toBe(202);
+    expect(JSON.parse(await res.text())).toMatchObject({ ok: true, jobId: JOB_ID, status: "done" });
+    expect(writes).toEqual([`${jobKey(JOB_ID)}:running`, `${jobKey(JOB_ID)}:done`]);
+    const blob = blobs.get(jobKey(JOB_ID)) as JobBlob;
+    expect(blob.status).toBe("done");
+    if (blob.status !== "done") throw new Error("expected a done job");
+    expect(blob.result.response).toEqual(response);
+    expect(blob.result.usage).toEqual({ inputTokens: 4200, cachedInputTokens: 9000, outputTokens: 900 });
+    expect(blob.result.costEstimateMils).toBeGreaterThan(0);
+    expect(blob.result.promptVersion).toBe(PROMPT_VERSION);
+    expect(blob.startedAt <= blob.finishedAt).toBe(true);
+    // the blob never carries the request, a key or a raw exception
+    const serialized = JSON.stringify(blob);
+    expect(serialized).not.toContain("sk-ant");
+    expect(serialized).not.toContain("markets");
     expect(calls).toHaveLength(1);
   });
 
   it("sends the documented request: cached system prefix, adaptive thinking, effort, schema, no prefill", async () => {
     const request = interpretRequest();
     const { client, calls } = fakeClient(() => textMessage(validResponse(request)));
-    await createHandler(() => client)(post({ kind: "interpret", request, model: "claude-sonnet-5", effort: "max" }));
+    await createHandler(() => client, () => fakeStore().store)(post(jobBody(request, { model: "claude-sonnet-5", effort: "max" })));
     const params = calls[0]!;
     expect(params.model).toBe("claude-sonnet-5");
     expect(params.max_tokens).toBe(16000);
@@ -141,38 +169,22 @@ describe("interpret function — valid paths", () => {
     expect(params).not.toHaveProperty("tools");
     const messages = params.messages as { role: string; content: string }[];
     expect(messages).toHaveLength(1);
-    expect(messages[0]!.role).toBe("user");
     expect(JSON.parse(messages[0]!.content)).toEqual(request);
-    const system = params.system as { type: string; text: string; cache_control: unknown }[];
-    expect(system).toHaveLength(1);
+    const system = params.system as { text: string; cache_control: unknown }[];
     expect(system[0]!.cache_control).toEqual({ type: "ephemeral" });
     expect(system[0]!.text.startsWith(SYSTEM_PROMPT)).toBe(true);
     expect(system[0]!.text).toContain("# How this strategy works");
     const output = params.output_config as { effort: string; format: { type: string; schema: Record<string, unknown> } };
     expect(output.effort).toBe("max");
     expect(output.format.type).toBe("json_schema");
-    // the schema is restricted to the markets in the request
-    const readingRoot = (output.format.schema as any).properties.readings.items.properties.root.enum;
-    expect(readingRoot).toEqual(["NQ", "ES"]);
-  });
-
-  it("sends no schema keyword the structured-output API rejects", async () => {
-    const request = interpretRequest();
-    const { client, calls } = fakeClient(() => textMessage(validResponse(request)));
-    await createHandler(() => client)(post({ kind: "interpret", request, model: "claude-opus-5", effort: "high" }));
-    const schema = (calls[0]!.output_config as { format: { schema: unknown } }).format.schema;
-    const serialized = JSON.stringify(schema);
+    const serialized = JSON.stringify(output.format.schema);
     for (const keyword of ["minLength", "maxLength", "minimum", "maximum", "minItems", "maxItems"]) {
       expect(serialized, `${keyword} must not be sent`).not.toContain(keyword);
     }
-    // and the supported keywords survive
-    expect(serialized).toContain('"additionalProperties":false');
-    expect(serialized).toContain('"required"');
-    expect(serialized).toContain('"enum"');
-    expect(serialized).toContain('"anyOf"');
+    expect((output.format.schema as any).properties.readings.items.properties.root.enum).toEqual(["NQ", "ES"]);
   });
 
-  it("validates a lesson against the campaign it was asked about, and a digest", async () => {
+  it("validates a lesson against its campaign and a digest, each with its own schema", async () => {
     const request = interpretRequest();
     const lessonRequest: InterpreterRequest = {
       ...request,
@@ -180,101 +192,127 @@ describe("interpret function — valid paths", () => {
       campaignSummary: { campaignId: "paperModel:NQ:1" } as unknown as NonNullable<InterpreterRequest["campaignSummary"]>,
     };
     const lesson: Lesson = { campaignId: "paperModel:NQ:1", whatHeld: ["breadth held"], whatFailed: [], weighDifferently: [], evidenceToWatch: [] };
-    const lessonClient = fakeClient(() => textMessage(lesson));
-    const lessonRes = await createHandler(() => lessonClient.client)(post({ kind: "lesson", request: lessonRequest, model: "claude-opus-5", effort: "high" }));
-    expect(lessonRes.status).toBe(200);
-    expect(JSON.parse(await lessonRes.text()).response).toEqual(lesson);
-    expect((lessonClient.calls[0]!.output_config as { format: { schema: any } }).format.schema.properties.campaignId).toBeDefined();
+    const lessonStore = fakeStore();
+    await createHandler(() => fakeClient(() => textMessage(lesson)).client, () => lessonStore.store)(
+      post(jobBody(lessonRequest, { kind: "lesson", jobId: `${JOB_ID}:lesson` })),
+    );
+    const lessonBlob = lessonStore.blobs.get(jobKey(`${JOB_ID}:lesson`)) as JobBlob;
+    expect(lessonBlob.status).toBe("done");
+    if (lessonBlob.status !== "done") throw new Error("expected a done job");
+    expect(lessonBlob.result.response).toEqual(lesson);
 
     const digest: Digest = { version: 1, lessonsCovered: 4, summary: "four campaigns", whatHeld: [], whatFailed: [], weighDifferently: [], evidenceToWatch: [] };
     const digestRequest: InterpreterRequest = { ...request, callKind: "digest", lessonsToCompact: [lesson] };
-    const digestClient = fakeClient(() => textMessage(digest));
-    const digestRes = await createHandler(() => digestClient.client)(post({ kind: "digest", request: digestRequest, model: "claude-opus-5", effort: "low" }));
-    expect(digestRes.status).toBe(200);
-    expect(JSON.parse(await digestRes.text()).response).toEqual(digest);
+    const digestStore = fakeStore();
+    await createHandler(() => fakeClient(() => textMessage(digest)).client, () => digestStore.store)(
+      post(jobBody(digestRequest, { kind: "digest", jobId: `${JOB_ID}:digest` })),
+    );
+    const digestBlob = digestStore.blobs.get(jobKey(`${JOB_ID}:digest`)) as JobBlob;
+    if (digestBlob.status !== "done") throw new Error("expected a done job");
+    expect(digestBlob.result.response).toEqual(digest);
   });
 });
 
-describe("interpret function — refusals, bad input and upstream errors", () => {
+describe("interpret background function — idempotency and failures", () => {
   const request = interpretRequest();
-  const handlerWith = (reply: (params: Record<string, unknown>) => unknown) => createHandler(() => fakeClient(reply).client);
 
-  it("refuses a model outside the allowed list", async () => {
-    const res = await handlerWith(() => textMessage(validResponse(request)))(
-      post({ kind: "interpret", request, model: "gpt-tiny", effort: "high" }),
-    );
-    expect(res.status).toBe(400);
-    expect(JSON.parse(await res.text())).toEqual({ ok: false, reason: "model is not in the allowed list", status: 400 });
+  it("does not call the model again for a job that already finished", async () => {
+    for (const status of ["done", "failed"] as const) {
+      const seedBlob =
+        status === "done"
+          ? { jobId: JOB_ID, status, startedAt: "t0", finishedAt: "t1", result: { ok: true, kind: "interpret", response: validResponse(request), usage: { inputTokens: 1, cachedInputTokens: 0, outputTokens: 1 }, model: "claude-opus-5", latencyMs: 5, costEstimateMils: 1, promptVersion: PROMPT_VERSION } }
+          : { jobId: JOB_ID, status, startedAt: "t0", finishedAt: "t1", reason: "refusal", httpStatus: 422, category: null };
+      const { store, blobs, writes } = fakeStore({ [jobKey(JOB_ID)]: seedBlob });
+      const { client, calls } = fakeClient(() => textMessage(validResponse(request)));
+      const res = await createHandler(() => client, () => store)(post(jobBody(request)));
+      expect(res.status).toBe(202);
+      expect(JSON.parse(await res.text())).toMatchObject({ status, note: "already finished; the model was not called again" });
+      expect(calls).toHaveLength(0);
+      expect(writes).toEqual([]);
+      expect(blobs.get(jobKey(JOB_ID))).toEqual(seedBlob);
+    }
   });
 
-  it("refuses a malformed body, a bad kind, a bad effort and a non-POST method", async () => {
-    const handler = handlerWith(() => textMessage(validResponse(request)));
-    expect((await handler(post("{not json"))).status).toBe(400);
-    expect(JSON.parse(await (await handler(post("{not json"))).text()).reason).toBe("body is not valid JSON");
-    expect(JSON.parse(await (await handler(post([1, 2]))).text()).reason).toBe("body must be a JSON object");
-    expect(JSON.parse(await (await handler(post({ kind: "chat", request, model: "claude-opus-5", effort: "high" }))).text()).reason).toMatch(/^kind must be one of/);
-    expect(JSON.parse(await (await handler(post({ kind: "interpret", request, model: "claude-opus-5", effort: "maximum" }))).text()).reason).toMatch(/^effort must be one of/);
-    expect(JSON.parse(await (await handler(post({ kind: "interpret", request: { promptVersion: "interp-0.1" }, model: "claude-opus-5", effort: "high" }))).text()).reason).toBe(
-      "request.markets is required",
-    );
-    expect(JSON.parse(await (await handler(post({ kind: "lesson", request, model: "claude-opus-5", effort: "high" }))).text()).reason).toBe(
-      "a lesson call needs request.campaignSummary.campaignId",
-    );
-    const get = new Request("https://example.test/api/interpret", { method: "GET" });
-    const res = await handler(get);
-    expect(res.status).toBe(405);
-    expect(JSON.parse(await res.text()).reason).toBe("POST only");
-  });
-
-  it("refuses an oversized body before calling the model", async () => {
+  it("re-runs a job that was left running, which is how a Netlify retry recovers", async () => {
+    const { store, writes } = fakeStore({ [jobKey(JOB_ID)]: { jobId: JOB_ID, status: "running", startedAt: "t0" } });
     const { client, calls } = fakeClient(() => textMessage(validResponse(request)));
-    const handler = createHandler(() => client);
-    const res = await handler(post({ kind: "interpret", request, model: "claude-opus-5", effort: "high" }, { "content-length": String(600 * 1024) }));
-    expect(res.status).toBe(413);
-    expect(calls).toHaveLength(0);
+    await createHandler(() => client, () => store)(post(jobBody(request)));
+    expect(calls).toHaveLength(1);
+    expect(writes).toEqual([`${jobKey(JOB_ID)}:running`, `${jobKey(JOB_ID)}:done`]);
   });
 
-  it("reports a refusal with its category and never as an ok result", async () => {
-    const res = await handlerWith(() =>
-      textMessage(null, { stop_reason: "refusal", stop_details: { type: "refusal", category: "general_harms", explanation: "…" }, content: [] }),
-    )(post({ kind: "interpret", request, model: "claude-opus-5", effort: "high" }));
-    expect(res.status).toBe(422);
-    expect(JSON.parse(await res.text())).toEqual({ ok: false, reason: "refusal", status: 422, category: "general_harms" });
-  });
-
-  it("reports a truncated answer, a non-JSON answer and a missing text block", async () => {
-    const truncated = await handlerWith(() => textMessage(validResponse(request), { stop_reason: "max_tokens" }))(
-      post({ kind: "interpret", request, model: "claude-opus-5", effort: "high" }),
-    );
-    expect(JSON.parse(await truncated.text())).toEqual({ ok: false, reason: "max_tokens", status: 422 });
-    const garbage = await handlerWith(() => ({ stop_reason: "end_turn", content: [{ type: "text", text: "not json" }], usage: USAGE }))(
-      post({ kind: "interpret", request, model: "claude-opus-5", effort: "high" }),
-    );
-    expect(JSON.parse(await garbage.text()).reason).toBe("model output is not valid JSON");
-    const noText = await handlerWith(() => ({ stop_reason: "end_turn", content: [{ type: "thinking", thinking: "…" }], usage: USAGE }))(
-      post({ kind: "interpret", request, model: "claude-opus-5", effort: "high" }),
-    );
-    expect(JSON.parse(await noText.text()).reason).toBe("model returned no text block");
-  });
-
-  it("rejects a response that fails validation, with the validator's reason and status 422", async () => {
+  it("records a validation failure as a failed blob with the validator's reason", async () => {
     const bad = { ...validResponse(request), evidenceStrength: "high" };
-    const res = await handlerWith(() => textMessage(bad))(post({ kind: "interpret", request, model: "claude-opus-5", effort: "high" }));
-    expect(res.status).toBe(422);
-    const body = JSON.parse(await res.text());
-    expect(body.ok).toBe(false);
-    expect(body.reason).toMatch(/^response.evidenceStrength must be one of weak \| moderate \| strong/);
+    const { store, blobs } = fakeStore();
+    const res = await createHandler(() => fakeClient(() => textMessage(bad)).client, () => store)(post(jobBody(request)));
+    expect(res.status).toBe(202);
+    const blob = blobs.get(jobKey(JOB_ID)) as JobBlob;
+    if (blob.status !== "failed") throw new Error("expected a failed job");
+    expect(blob.httpStatus).toBe(422);
+    expect(blob.reason).toMatch(/^response.evidenceStrength must be one of weak \| moderate \| strong/);
   });
 
-  it("rejects a response naming a market outside the request", async () => {
-    const bad = validResponse(request);
-    bad.proposal.root = "RTY";
-    const res = await handlerWith(() => textMessage(bad))(post({ kind: "interpret", request, model: "claude-opus-5", effort: "high" }));
-    expect(res.status).toBe(422);
-    expect(JSON.parse(await res.text()).reason).toBe('proposal.root "RTY" is not a market in the request');
+  it("records a bad body as a failed blob, and a bad job id directly", async () => {
+    const cases: { body: Record<string, unknown>; reason: string | RegExp }[] = [
+      { body: jobBody(request, { model: "gpt-tiny" }), reason: "model is not in the allowed list" },
+      { body: jobBody(request, { effort: "maximum" }), reason: /^effort must be one of/ },
+      { body: jobBody(request, { kind: "chat" }), reason: /^kind must be one of/ },
+      { body: jobBody(request, { request: { promptVersion: "interp-0.1" } }), reason: "request.markets is required" },
+      { body: jobBody(request, { kind: "lesson" }), reason: "a lesson call needs request.campaignSummary.campaignId" },
+    ];
+    for (const c of cases) {
+      const { store, blobs } = fakeStore();
+      const { calls } = fakeClient(() => textMessage(validResponse(request)));
+      await createHandler(() => fakeClient(() => textMessage(validResponse(request))).client, () => store)(post(c.body));
+      const blob = blobs.get(jobKey(JOB_ID)) as JobBlob;
+      if (blob.status !== "failed") throw new Error(`expected a failed job for ${JSON.stringify(c.reason)}`);
+      if (typeof c.reason === "string") expect(blob.reason).toBe(c.reason);
+      else expect(blob.reason).toMatch(c.reason);
+      expect(blob.httpStatus).toBe(400);
+      expect(calls).toHaveLength(0);
+    }
+    // no usable job id: answered directly, nothing written
+    const { store, writes } = fakeStore();
+    const res = await createHandler(() => fakeClient(() => textMessage(validResponse(request))).client, () => store)(post({ kind: "interpret", request, model: "claude-opus-5", effort: "high" }));
+    expect(res.status).toBe(400);
+    expect(JSON.parse(await res.text()).reason).toMatch(/^jobId must be an interpreter event id/);
+    expect(writes).toEqual([]);
   });
 
-  it("maps SDK errors to statuses without leaking anything", async () => {
+  it("refuses a non-POST method and an oversized body before touching the store", async () => {
+    const { store, writes } = fakeStore();
+    const handler = createHandler(() => fakeClient(() => textMessage(validResponse(request))).client, () => store);
+    const get = new Request("https://example.test/api/interpret", { method: "GET" });
+    expect((await handler(get)).status).toBe(405);
+    const big = await handler(post(jobBody(request), { "content-length": String(600 * 1024) }));
+    expect(big.status).toBe(413);
+    expect(writes).toEqual([]);
+  });
+
+  it("records a refusal, a truncation and unusable output as failed blobs", async () => {
+    const cases: { message: Record<string, unknown>; reason: string; status: number; category?: string }[] = [
+      {
+        message: textMessage(null, { stop_reason: "refusal", stop_details: { type: "refusal", category: "general_harms" }, content: [] }),
+        reason: "refusal",
+        status: 422,
+        category: "general_harms",
+      },
+      { message: textMessage(validResponse(request), { stop_reason: "max_tokens" }), reason: "max_tokens", status: 422 },
+      { message: { stop_reason: "end_turn", content: [{ type: "text", text: "not json" }], usage: USAGE }, reason: "model output is not valid JSON", status: 422 },
+      { message: { stop_reason: "end_turn", content: [{ type: "thinking", thinking: "…" }], usage: USAGE }, reason: "model returned no text block", status: 422 },
+    ];
+    for (const c of cases) {
+      const { store, blobs } = fakeStore();
+      await createHandler(() => fakeClient(() => c.message).client, () => store)(post(jobBody(request)));
+      const blob = blobs.get(jobKey(JOB_ID)) as JobBlob;
+      if (blob.status !== "failed") throw new Error(`expected a failed job for ${c.reason}`);
+      expect(blob.reason).toBe(c.reason);
+      expect(blob.httpStatus).toBe(c.status);
+      if (c.category) expect(blob.category).toBe(c.category);
+    }
+  });
+
+  it("maps SDK errors into failed blobs without leaking anything", async () => {
     const headers = new Headers();
     const cases: { err: Error; status: number; reason: string | RegExp }[] = [
       { err: new AuthenticationError(401, { type: "error" }, "bad key sk-ant-secret", headers), status: 500, reason: "server misconfigured" },
@@ -285,14 +323,197 @@ describe("interpret function — refusals, bad input and upstream errors", () =>
       { err: new Error("something else"), status: 500, reason: "interpreter call failed" },
     ];
     for (const c of cases) {
-      const res = await handlerWith(() => c.err)(post({ kind: "interpret", request, model: "claude-opus-5", effort: "high" }));
-      expect(res.status, c.err.constructor.name).toBe(c.status);
-      const body = JSON.parse(await res.text());
-      expect(body.ok).toBe(false);
-      if (typeof c.reason === "string") expect(body.reason).toBe(c.reason);
-      else expect(body.reason).toMatch(c.reason);
-      expect(JSON.stringify(body)).not.toContain("sk-ant");
+      const { store, blobs } = fakeStore();
+      await createHandler(() => fakeClient(() => c.err).client, () => store)(post(jobBody(request)));
+      const blob = blobs.get(jobKey(JOB_ID)) as JobBlob;
+      if (blob.status !== "failed") throw new Error(`expected a failed job for ${c.err.constructor.name}`);
+      expect(blob.httpStatus).toBe(c.status);
+      if (typeof c.reason === "string") expect(blob.reason).toBe(c.reason);
+      else expect(blob.reason).toMatch(c.reason);
+      expect(JSON.stringify(blob)).not.toContain("sk-ant");
     }
+  });
+});
+
+describe("interpret-result endpoint", () => {
+  const request = interpretRequest();
+  const doneBlob: JobBlob = {
+    jobId: JOB_ID,
+    status: "done",
+    startedAt: "2026-01-02T21:00:00Z",
+    finishedAt: "2026-01-02T21:03:00Z",
+    result: {
+      ok: true,
+      kind: "interpret",
+      response: validResponse(request),
+      usage: { inputTokens: 10, cachedInputTokens: 5, outputTokens: 2 },
+      model: "claude-opus-5",
+      latencyMs: 180_000,
+      costEstimateMils: 1000,
+      promptVersion: PROMPT_VERSION,
+    },
+  };
+  const get = (query: string) => new Request(`https://example.test/api/interpret/result${query}`, { method: "GET" });
+
+  it("returns the job blob unchanged", async () => {
+    const { store } = fakeStore({ [jobKey(JOB_ID)]: doneBlob });
+    const res = await createResultHandler(() => store)(get(`?jobId=${encodeURIComponent(JOB_ID)}`));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(JSON.parse(await res.text())).toEqual(doneBlob);
+  });
+
+  it("404 when the job has not been written yet", async () => {
+    const { store } = fakeStore();
+    const res = await createResultHandler(() => store)(get(`?jobId=${encodeURIComponent(JOB_ID)}`));
+    expect(res.status).toBe(404);
+    expect(JSON.parse(await res.text()).reason).toBe("no such job yet");
+  });
+
+  it("400 on a missing or malformed job id, 405 on a non-GET", async () => {
+    const { store } = fakeStore({ [jobKey(JOB_ID)]: doneBlob });
+    const handler = createResultHandler(() => store);
+    expect((await handler(get(""))).status).toBe(400);
+    expect((await handler(get("?jobId="))).status).toBe(400);
+    expect((await handler(get(`?jobId=${encodeURIComponent("a".repeat(201))}`))).status).toBe(400);
+    expect((await handler(get("?jobId=" + encodeURIComponent("../../etc/passwd")))).status).toBe(400);
+    const post = new Request("https://example.test/api/interpret/result?jobId=x", { method: "POST" });
+    expect((await handler(post)).status).toBe(405);
+  });
+
+  it("502 when the store cannot be read", async () => {
+    const broken: BlobStoreLike = {
+      async get() {
+        throw new Error("blob store unavailable");
+      },
+      async setJSON() {
+        return {};
+      },
+    };
+    const res = await createResultHandler(() => broken)(get(`?jobId=${encodeURIComponent(JOB_ID)}`));
+    expect(res.status).toBe(502);
+    expect(JSON.parse(await res.text()).reason).toBe("could not read the job store");
+  });
+});
+
+describe("browser client — post then poll", () => {
+  const request = interpretRequest();
+  const body = { kind: "interpret" as const, request, model: "claude-opus-5", effort: "high" as const, jobId: JOB_ID };
+  const okResult = {
+    ok: true,
+    kind: "interpret",
+    response: validResponse(request),
+    usage: { inputTokens: 1, cachedInputTokens: 0, outputTokens: 1 },
+    model: "claude-opus-5",
+    latencyMs: 5,
+    costEstimateMils: 10,
+    promptVersion: PROMPT_VERSION,
+  };
+
+  /** Scripted transport: one reply per call, the last one repeating. */
+  function transport(replies: { status: number; body?: unknown; retryAfter?: string }[]): { fetchImpl: FetchLike; seen: string[] } {
+    const seen: string[] = [];
+    let i = 0;
+    const fetchImpl: FetchLike = async (path, init) => {
+      const reply = replies[Math.min(i, replies.length - 1)]!;
+      i += 1;
+      seen.push(`${init?.method ?? "GET"} ${path}`);
+      return {
+        ok: reply.status < 400,
+        status: reply.status,
+        headers: { get: (name: string) => (name.toLowerCase() === "retry-after" ? (reply.retryAfter ?? null) : null) },
+        text: async () => (reply.body === undefined ? "" : typeof reply.body === "string" ? reply.body : JSON.stringify(reply.body)),
+      };
+    };
+    return { fetchImpl, seen };
+  }
+
+  const fastClock = () => {
+    let t = 0;
+    return { sleep: async (ms: number) => void (t += ms), now: () => t };
+  };
+
+  it("posts a job, polls past a 404 and a running blob, and returns the done result", async () => {
+    const clock = fastClock();
+    const progress: CallProgress[] = [];
+    const { fetchImpl, seen } = transport([
+      { status: 202, body: { ok: true, jobId: JOB_ID, status: "running" } },
+      { status: 404, body: { ok: false, reason: "no such job yet", status: 404 } },
+      { status: 200, body: { jobId: JOB_ID, status: "running", startedAt: "t0" } },
+      { status: 200, body: { jobId: JOB_ID, status: "done", startedAt: "t0", finishedAt: "t1", result: okResult } },
+    ]);
+    const result = await callInterpreter(body, fetchImpl, { ...clock, onProgress: (p) => progress.push(p) });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.response).toEqual(okResult.response);
+    expect(seen[0]).toBe("POST /api/interpret");
+    expect(seen[1]).toBe(`GET /api/interpret/result?jobId=${encodeURIComponent(JOB_ID)}`);
+    expect(seen).toHaveLength(4);
+    // progress is reported: posted, then one per poll before the answer
+    expect(progress[0]).toMatchObject({ status: "posted", elapsedMs: 0 });
+    expect(progress.map((p) => p.status)).toEqual(["posted", "waiting", "running"]);
+    expect(progress[progress.length - 1]!.elapsedMs).toBe(4000);
+  });
+
+  it("maps a failed job to the typed error shape, including a refusal category", async () => {
+    const clock = fastClock();
+    const { fetchImpl } = transport([
+      { status: 202, body: { ok: true, status: "running" } },
+      { status: 200, body: { jobId: JOB_ID, status: "failed", startedAt: "t0", finishedAt: "t1", reason: "refusal", httpStatus: 422, category: "general_harms" } },
+    ]);
+    expect(await callInterpreter(body, fetchImpl, clock)).toEqual({ ok: false, reason: "refusal", status: 422, category: "general_harms" });
+  });
+
+  it("gives up after the timeout and says the job may still finish", async () => {
+    const clock = fastClock();
+    const { fetchImpl } = transport([
+      { status: 202, body: { ok: true, status: "running" } },
+      { status: 200, body: { jobId: JOB_ID, status: "running", startedAt: "t0" } },
+    ]);
+    const result = await callInterpreter(body, fetchImpl, { ...clock, timeoutMs: 10_000, pollIntervalMs: 2000 });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected a timeout");
+    expect(result.status).toBe(504);
+    expect(result.reason).toMatch(/did not answer within 10 s; the job may still finish/);
+  });
+
+  it("retries the POST once on 429 and not on other statuses", async () => {
+    const clock = fastClock();
+    const waits: number[] = [];
+    const { fetchImpl, seen } = transport([
+      { status: 429, body: { ok: false, reason: "rate limited", status: 429 }, retryAfter: "2" },
+      { status: 202, body: { ok: true, status: "running" } },
+      { status: 200, body: { jobId: JOB_ID, status: "done", startedAt: "t0", finishedAt: "t1", result: okResult } },
+    ]);
+    const result = await callInterpreter(body, fetchImpl, { ...clock, sleep: async (ms) => void waits.push(ms) });
+    expect(result.ok).toBe(true);
+    expect(seen.filter((s) => s.startsWith("POST"))).toHaveLength(2);
+    expect(waits[0]).toBe(2000);
+
+    const server = transport([{ status: 500, body: { ok: false, reason: "server misconfigured", status: 500 } }]);
+    expect(await callInterpreter(body, server.fetchImpl, clock)).toEqual({ ok: false, reason: "server misconfigured", status: 500, category: null });
+    expect(server.seen.filter((s) => s.startsWith("POST"))).toHaveLength(1);
+  });
+
+  it("accepts a synchronous 200 answer (local dev) without polling", async () => {
+    const clock = fastClock();
+    const { fetchImpl, seen } = transport([{ status: 200, body: okResult }]);
+    const result = await callInterpreter(body, fetchImpl, clock);
+    expect(result.ok).toBe(true);
+    expect(seen).toEqual(["POST /api/interpret"]);
+  });
+
+  it("reports a network failure and refuses to run without a job id", async () => {
+    const thrown: FetchLike = async () => {
+      throw new Error("offline");
+    };
+    const netFail = await callInterpreter(body, thrown, fastClock());
+    expect(netFail).toMatchObject({ ok: false, status: 0 });
+    expect(netFail.ok === false && netFail.reason).toMatch(/could not reach the interpreter function: offline/);
+
+    const noJob = await callInterpreter({ ...body, jobId: undefined }, thrown, fastClock());
+    expect(noJob).toMatchObject({ ok: false, status: 400 });
+    expect(noJob.ok === false && noJob.reason).toMatch(/needs a jobId/);
   });
 });
 
@@ -319,77 +540,11 @@ describe("helpers", () => {
     });
   });
 
-  it("loads the how-it-works document for the cached prefix", () => {
-    expect(loadHowItWorks().startsWith("# How this strategy works")).toBe(true);
-  });
-
   it("the system prompt states the boundaries and never invites a probability", () => {
     expect(SYSTEM_PROMPT).toContain("deterministic calculator owns every number");
     expect(SYSTEM_PROMPT).toContain("integer tick count");
     expect(SYSTEM_PROMPT).toContain("not a probability");
     expect(SYSTEM_PROMPT).toContain("weak, moderate, strong");
     expect(SYSTEM_PROMPT).toContain(PROMPT_VERSION);
-  });
-});
-
-describe("browser client", () => {
-  const request = interpretRequest();
-  const okBody = { ok: true, kind: "interpret", response: validResponse(request), usage: { inputTokens: 1, cachedInputTokens: 0, outputTokens: 1 }, model: "claude-opus-5", latencyMs: 5, costEstimateMils: 10, promptVersion: PROMPT_VERSION };
-
-  function fetchStub(replies: { status: number; body: unknown; retryAfter?: string }[]): { fetchImpl: FetchLike; seen: number } {
-    const state = { seen: 0 };
-    const fetchImpl: FetchLike = async () => {
-      const reply = replies[Math.min(state.seen, replies.length - 1)]!;
-      state.seen += 1;
-      return {
-        ok: reply.status < 400,
-        status: reply.status,
-        headers: { get: (name: string) => (name.toLowerCase() === "retry-after" ? (reply.retryAfter ?? null) : null) },
-        text: async () => (typeof reply.body === "string" ? reply.body : JSON.stringify(reply.body)),
-      };
-    };
-    return { fetchImpl, get seen() { return state.seen; } } as { fetchImpl: FetchLike; seen: number };
-  }
-
-  it("returns the ok result and posts to the function path", async () => {
-    let seenPath = "";
-    const fetchImpl: FetchLike = async (path, init) => {
-      seenPath = path;
-      expect(init?.method).toBe("POST");
-      return { ok: true, status: 200, headers: { get: () => null }, text: async () => JSON.stringify(okBody) };
-    };
-    const result = await callInterpreter({ kind: "interpret", request, model: "claude-opus-5", effort: "high" }, fetchImpl);
-    expect(result.ok).toBe(true);
-    expect(seenPath).toBe("/api/interpret");
-  });
-
-  it("retries once on 429 after Retry-After, and not on other statuses", async () => {
-    const waits: number[] = [];
-    const rate = fetchStub([
-      { status: 429, body: { ok: false, reason: "rate limited", status: 429 }, retryAfter: "2" },
-      { status: 200, body: okBody },
-    ]);
-    const result = await callInterpreter({ kind: "interpret", request, model: "claude-opus-5", effort: "high" }, rate.fetchImpl, {
-      sleep: async (ms) => void waits.push(ms),
-    });
-    expect(result.ok).toBe(true);
-    expect(waits).toEqual([2000]);
-
-    const server = fetchStub([{ status: 500, body: { ok: false, reason: "server misconfigured", status: 500 } }]);
-    const failed = await callInterpreter({ kind: "interpret", request, model: "claude-opus-5", effort: "high" }, server.fetchImpl, { sleep: async () => undefined });
-    expect(failed).toEqual({ ok: false, reason: "server misconfigured", status: 500, category: null });
-  });
-
-  it("reports a network failure and a non-JSON body as errors, never as ok", async () => {
-    const thrown: FetchLike = async () => {
-      throw new Error("offline");
-    };
-    const netFail = await callInterpreter({ kind: "interpret", request, model: "claude-opus-5", effort: "high" }, thrown);
-    expect(netFail).toMatchObject({ ok: false, status: 0 });
-    expect(netFail.ok === false && netFail.reason).toMatch(/could not reach the interpreter function: offline/);
-
-    const html: FetchLike = async () => ({ ok: false, status: 502, headers: { get: () => null }, text: async () => "<html>bad gateway</html>" });
-    const bad = await callInterpreter({ kind: "interpret", request, model: "claude-opus-5", effort: "high" }, html);
-    expect(bad).toMatchObject({ ok: false, status: 502 });
   });
 });

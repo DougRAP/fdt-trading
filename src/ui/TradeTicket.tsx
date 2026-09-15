@@ -603,7 +603,7 @@ function PaperTicket({ snapshot, active }: { snapshot: SignalSnapshot | null; ac
           </button>
         )}
         <button type="button" className="cp-main" onClick={modelMode ? () => void startModel() : start} disabled={!!active || paused || state.modelInFlight}>
-          {modelMode ? (state.modelInFlight ? "Asking model…" : "Start with a model reading") : "Start paper engine"}
+          {modelMode ? (state.modelInFlight ? `Asking model… ${Math.round(state.modelElapsedMs / 1000)} s` : "Start with a model reading") : "Start paper engine"}
         </button>
         <button type="button" onClick={modelMode ? () => void stepModel() : step} disabled={!active || stepsLeft === 0 || state.modelInFlight}>Run paper step{active ? ` (${stepsLeft} synthetic bars left)` : ""}</button>
         {paused ? (

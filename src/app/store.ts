@@ -130,6 +130,8 @@ export interface AppState {
   modelAssist: boolean;
   /** True while an interpreter call is in flight; every call is user-initiated. */
   modelInFlight: boolean;
+  /** Milliseconds since the in-flight call was posted; the model runs as a background job. */
+  modelElapsedMs: number;
   modelError: string | null;
   /** The latest reading for display, with what the risk engine cleared. */
   modelReading: ModelReading | null;
@@ -204,6 +206,7 @@ function initialState(storage: StorageLike): AppState {
     storageKind: storage instanceof MemoryStorage ? "memory" : "localStorage",
     modelAssist: true,
     modelInFlight: false,
+    modelElapsedMs: 0,
     modelError: null,
     modelReading: null,
   };
@@ -234,7 +237,13 @@ export function useAppStore(storage: StorageLike, deps: AppDeps = {}): AppStore 
   }, []);
 
   const actions = useMemo<AppActions>(() => {
-    const interpreter: InterpreterCall = deps.interpreter ?? ((body) => callInterpreter(body));
+    const interpreter: InterpreterCall =
+      deps.interpreter ??
+      ((body) =>
+        callInterpreter(body, undefined, {
+          // The only progress the UI needs: how long the background job has been running.
+          onProgress: (p) => setState((s) => (s.modelInFlight ? { ...s, modelElapsedMs: p.elapsedMs } : s)),
+        }));
 
     const engineInputFor = (): ModelEngineInput => ({
       interpreter,
@@ -249,7 +258,7 @@ export function useAppStore(storage: StorageLike, deps: AppDeps = {}): AppStore 
     /** One interpreter call at a time, and never on a timer. */
     const runModel = async <T>(mode: Mode, fn: (engineInput: ModelEngineInput) => Promise<T | null>): Promise<T | null> => {
       if (ref.current.modelInFlight) return null;
-      setState((s) => ({ ...s, modelInFlight: true, modelError: null }));
+      setState((s) => ({ ...s, modelInFlight: true, modelElapsedMs: 0, modelError: null }));
       try {
         return await fn(engineInputFor());
       } catch (err) {
@@ -257,7 +266,7 @@ export function useAppStore(storage: StorageLike, deps: AppDeps = {}): AppStore 
         bump({ modelError: `Interpreter error in ${mode}: ${message}` });
         return null;
       } finally {
-        setState((s) => ({ ...s, modelInFlight: false }));
+        setState((s) => ({ ...s, modelInFlight: false, modelElapsedMs: 0 }));
       }
     };
 

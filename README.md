@@ -154,6 +154,11 @@ everywhere it appears and is not billing data.
   (gitignored, never committed). No key is needed for anything except a live model call.
 - `npm run check` runs typecheck, tests, build and the bundle check.
 
+
+### Background job flow (P2.8)
+
+Netlify synchronous functions stop at 60 seconds, which an Opus call with adaptive thinking can exceed. The interpreter therefore runs as a **background function**: `POST /api/interpret` validates the body, writes a job blob (`jobs/<jobId>`, Netlify Blobs store `interpreter`) with status `running`, returns `202` immediately, calls the provider, then writes `done` with the validated result or `failed` with a reason. The browser polls `GET /api/interpret/result?jobId=…` every 2 seconds (strong-consistency read) for up to 6 minutes and shows elapsed time. The `jobId` is the interpreter event id for that bar, call kind, model and prompt version, so a repeated request or a Netlify retry of a finished job never calls the model twice. The job blob never contains the request body, the key, or a raw exception.
+
 ## Missing before live data
 
 Not built. Each item must exist and be verified before any real data source is connected:

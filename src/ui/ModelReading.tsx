@@ -64,7 +64,7 @@ export function ModelReading({ initiallyExpanded = false }: ModelReadingProps) {
         </span>
         <span className="cp-actions">
           <button type="button" className="cp-drawer-btn" onClick={() => void actions.askModel()} disabled={state.modelInFlight} aria-busy={state.modelInFlight}>
-            {state.modelInFlight ? "Asking model…" : "Ask model"}
+            {state.modelInFlight ? `Asking model… ${Math.round(state.modelElapsedMs / 1000)} s` : "Ask model"}
           </button>
           <button type="button" className="cp-drawer-btn" aria-expanded={expanded} aria-controls="model-reading-detail" onClick={() => setExpanded((v) => !v)}>
             {expanded ? "Collapse" : "Expand"}
